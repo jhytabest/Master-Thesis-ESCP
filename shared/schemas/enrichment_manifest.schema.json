@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "source",
+    "retrieval_date",
+    "matching_strategy",
+    "coverage_stats"
+  ],
+  "properties": {
+    "source": { "type": "string" },
+    "retrieval_date": { "type": "string", "format": "date" },
+    "matching_strategy": { "type": "string" },
+    "thresholds": { "type": "object" },
+    "coverage_stats": { "type": "object" },
+    "known_biases": { "type": "array", "items": { "type": "string" } },
+    "evidence_pointers": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

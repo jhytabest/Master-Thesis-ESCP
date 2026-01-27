@@ -1,0 +1,20 @@
+# Variable definitions for cohort and features
+# Fill with the authoritative data dictionary.
+
+company_id:
+  description: Stable company identifier (SIREN or hash)
+  type: string
+  example: "123456789"
+
+company_status_clean:
+  description: Normalized company status from mapping bundle
+  type: string
+
+stage_ordinal:
+  description: Ordered growth stage derived from raw stage text
+  type: integer
+
+has_funding:
+  description: Whether company has any funding events
+  type: boolean
+

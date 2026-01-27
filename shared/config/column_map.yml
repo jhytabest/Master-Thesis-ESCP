@@ -1,0 +1,14 @@
+# Map raw column names to canonical names
+columns:
+  SIREN: company_siren
+  NAME: company_name
+  COMPANY_STATUS: company_status_raw
+  CREATION_DATE: creation_date_raw
+  FIRST_FUNDING_DATE: first_funding_date_raw
+  LAST_FUNDING_DATE: last_funding_date_raw
+  VALUATION_DATE: valuation_date_raw
+  TARGET_TOTAL_FUNDING: target_total_funding_raw
+  LAST_FUNDING: last_funding_raw
+  VALUATION: valuation_raw
+  TARGET_ROUNDS: target_rounds_raw
+  GROWTH_STAGE: growth_stage_raw

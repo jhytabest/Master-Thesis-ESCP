@@ -1,0 +1,15 @@
+name = "worker-api"
+main = "src/index.ts"
+compatibility_date = "2026-01-27"
+
+[vars]
+AUTH_TOKEN = "replace-me"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "deeptech-meta"
+database_id = "REPLACE_WITH_D1_ID"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "deeptech-artifacts"

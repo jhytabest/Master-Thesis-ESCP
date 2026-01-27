@@ -1,0 +1,18 @@
+# Node
+node_modules
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build artifacts
+/dist/
+/build/
+
+# OS
+.DS_Store
