@@ -2,6 +2,8 @@ import argparse
 import io
 import json
 import os
+import sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -26,6 +28,7 @@ from mapping.utils import (
 
 ALLOWED_ACTIONS = {"map_values", "parse_numeric", "split_list", "consolidate", "skip"}
 MAX_MODEL_ATTEMPTS = 3
+MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
 
 
 def build_model(model_name: str) -> GenerativeModel:
@@ -79,6 +82,26 @@ def build_retry_prompt(base_prompt: str, error: str) -> str:
     f"Reason: {error}\n"
     "Return ONLY valid JSON matching the schema."
   )
+
+
+def log(message: str) -> None:
+  print(message, file=sys.stdout, flush=True)
+
+
+def generate_with_timeout(model: GenerativeModel, prompt: str) -> str:
+  def _call() -> str:
+    response = model.generate_content(
+      prompt,
+      generation_config=GenerationConfig(
+        temperature=0.2,
+        response_mime_type="application/json"
+      )
+    )
+    return response.text or ""
+
+  with ThreadPoolExecutor(max_workers=1) as executor:
+    future = executor.submit(_call)
+    return future.result(timeout=MODEL_TIMEOUT_SECONDS)
 
 
 def build_consolidation_prompt(columns: List[Dict[str, Any]]) -> str:
@@ -185,7 +208,8 @@ def main() -> None:
   model = build_model(args.model)
 
   column_summaries: List[Dict[str, Any]] = []
-  for column in df.columns:
+  for idx, column in enumerate(df.columns, start=1):
+    log(f"[column {idx}/{len(df.columns)}] start {column}")
     series = df[column]
     total_rows = len(series)
     missing_count = sum(1 for value in series.tolist() if is_missing_value(value))
@@ -219,23 +243,25 @@ def main() -> None:
         prompt = build_retry_prompt(base_prompt, last_error)
       prompt_hash = sha256_text(prompt)
       try:
-        response = model.generate_content(
-          prompt,
-          generation_config=GenerationConfig(
-            temperature=0.2,
-            response_mime_type="application/json"
-          )
-        )
-        output = safe_json_loads(response.text or "")
+        log(f"[column {column}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
+        output = safe_json_loads(generate_with_timeout(model, prompt))
         if not isinstance(output, dict):
           raise ValueError("expected JSON object")
         action = output.get("action")
         if action not in ALLOWED_ACTIONS:
           raise ValueError(f"invalid action '{action}'")
+        log(f"[column {column}] action={action}")
         break
+      except TimeoutError:
+        last_error = f"timeout after {MODEL_TIMEOUT_SECONDS}s"
+        output = {}
+        log(f"[column {column}] timeout: {last_error}")
+        if attempt == MAX_MODEL_ATTEMPTS - 1:
+          output = fallback_skip_output(column, last_error)
       except Exception as exc:
         last_error = str(exc)
         output = {}
+        log(f"[column {column}] error: {last_error}")
         if attempt == MAX_MODEL_ATTEMPTS - 1:
           output = fallback_skip_output(column, last_error)
     else:
@@ -319,14 +345,8 @@ def main() -> None:
   consolidation_prompt = build_consolidation_prompt(column_summaries)
   consolidation_prompt_hash = sha256_text(consolidation_prompt)
   consolidation_input_hash = sha256_text(json.dumps(column_summaries, ensure_ascii=False, separators=(",", ":")))
-  consolidation_resp = model.generate_content(
-    consolidation_prompt,
-    generation_config=GenerationConfig(
-      temperature=0.2,
-      response_mime_type="application/json"
-    )
-  )
-  consolidations = safe_json_loads(consolidation_resp.text or "")
+  log("[consolidations] start")
+  consolidations = safe_json_loads(generate_with_timeout(model, consolidation_prompt))
   if not isinstance(consolidations, list):
     raise RuntimeError("Invalid consolidations response: expected JSON list")
 
