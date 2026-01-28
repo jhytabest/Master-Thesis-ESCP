@@ -1,14 +1,11 @@
-name = "worker-api"
+name = "deeptech-worker"
 main = "src/index.ts"
 compatibility_date = "2026-01-27"
-
-[vars]
-AUTH_TOKEN = "replace-me"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "deeptech-meta"
-database_id = "REPLACE_WITH_D1_ID"
+database_id = "3fcb9147-e416-40f1-932f-501bb115d7b9"
 
 [[r2_buckets]]
 binding = "R2"

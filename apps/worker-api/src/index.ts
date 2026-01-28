@@ -58,6 +58,63 @@ function parsePath(pathname: string): string[] {
   return pathname.replace(/\/+$/, "").split("/").filter(Boolean);
 }
 
+function bytesToHex(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  let hex = "";
+  for (const byte of view) {
+    hex += byte.toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  return bytesToHex(hash);
+}
+
+function parseCsvHeader(headerLine: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < headerLine.length; i += 1) {
+    const char = headerLine[i];
+    if (char === "\"") {
+      if (inQuotes && headerLine[i + 1] === "\"") {
+        current += "\"";
+        i += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.length > 0) {
+    result.push(current.trim());
+  }
+  return result.filter(Boolean);
+}
+
+async function extractCsvMetadata(buffer: ArrayBuffer): Promise<{ rowCount: number; schema: JsonRecord }> {
+  const text = new TextDecoder("utf-8").decode(buffer);
+  const lines = text.split(/\r?\n/);
+  if (lines.length === 0) {
+    return { rowCount: 0, schema: { columns: [], column_count: 0 } };
+  }
+  if (lines[lines.length - 1]?.trim() === "") {
+    lines.pop();
+  }
+  const headerLine = lines[0] ?? "";
+  const columns = parseCsvHeader(headerLine);
+  const rowCount = Math.max(0, lines.length - 1);
+  return { rowCount, schema: { columns, column_count: columns.length } };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -75,27 +132,81 @@ export default {
       if (request.method !== "POST") {
         return badRequest("method_not_allowed");
       }
-      const body = (await request.json().catch(() => null)) as JsonRecord | null;
-      if (!body) {
-        return badRequest("invalid_json");
-      }
-      const sourcePath = body.source_path as string | undefined;
-      const datasetSha = body.dataset_sha256 as string | undefined;
-      const rowCount = body.row_count as number | undefined;
-      const schemaJson = body.schema_json as JsonRecord | undefined;
-      if (!sourcePath || !datasetSha || typeof rowCount !== "number" || !schemaJson) {
-        return badRequest("missing_required_fields");
-      }
-      const versionId = (body.version_id as string | undefined) ?? crypto.randomUUID();
+      const contentType = request.headers.get("content-type") ?? "";
       const createdAt = new Date().toISOString();
+      if (contentType.includes("application/json")) {
+        const body = (await request.json().catch(() => null)) as JsonRecord | null;
+        if (!body) {
+          return badRequest("invalid_json");
+        }
+        const sourcePath = body.source_path as string | undefined;
+        const datasetSha = body.dataset_sha256 as string | undefined;
+        const rowCount = body.row_count as number | undefined;
+        const schemaJson = body.schema_json as JsonRecord | undefined;
+        if (!sourcePath || !datasetSha || typeof rowCount !== "number" || !schemaJson) {
+          return badRequest("missing_required_fields");
+        }
+        const versionId = (body.version_id as string | undefined) ?? crypto.randomUUID();
+
+        await env.DB.prepare(
+          "INSERT INTO versions (version_id, created_at, source_path, dataset_sha256, row_count, schema_json) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+          .bind(versionId, createdAt, sourcePath, datasetSha, rowCount, JSON.stringify(schemaJson))
+          .run();
+
+        return jsonResponse({ version_id: versionId, created_at: createdAt });
+      }
+
+      let buffer: ArrayBuffer | null = null;
+      let versionId: string | null = null;
+      if (contentType.includes("multipart/form-data")) {
+        const form = await request.formData();
+        const file = form.get("file");
+        if (file instanceof File) {
+          buffer = await file.arrayBuffer();
+        }
+        const suppliedVersion = form.get("version_id");
+        if (typeof suppliedVersion === "string" && suppliedVersion.trim()) {
+          versionId = suppliedVersion.trim();
+        }
+      } else {
+        buffer = await request.arrayBuffer();
+        const suppliedVersion = request.headers.get("x-version-id");
+        if (suppliedVersion && suppliedVersion.trim()) {
+          versionId = suppliedVersion.trim();
+        }
+      }
+
+      if (!buffer) {
+        return badRequest("missing_file");
+      }
+      const finalVersionId = versionId ?? crypto.randomUUID();
+      const datasetSha = await sha256Hex(buffer);
+      const { rowCount, schema } = await extractCsvMetadata(buffer);
+      const sourcePath = `raw/${finalVersionId}/dataset.csv`;
+
+      await env.R2.put(sourcePath, buffer, {
+        httpMetadata: { contentType: "text/csv" },
+        customMetadata: {
+          dataset_sha256: datasetSha,
+          row_count: rowCount.toString()
+        }
+      });
 
       await env.DB.prepare(
         "INSERT INTO versions (version_id, created_at, source_path, dataset_sha256, row_count, schema_json) VALUES (?, ?, ?, ?, ?, ?)"
       )
-        .bind(versionId, createdAt, sourcePath, datasetSha, rowCount, JSON.stringify(schemaJson))
+        .bind(finalVersionId, createdAt, sourcePath, datasetSha, rowCount, JSON.stringify(schema))
         .run();
 
-      return jsonResponse({ version_id: versionId, created_at: createdAt });
+      return jsonResponse({
+        version_id: finalVersionId,
+        created_at: createdAt,
+        source_path: sourcePath,
+        dataset_sha256: datasetSha,
+        row_count: rowCount,
+        schema_json: schema
+      });
     }
 
     if (segments.length === 2 && segments[0] === "runs" && segments[1] === "trigger") {
@@ -111,7 +222,7 @@ export default {
         return badRequest("missing_version_id");
       }
       const mappingBundleId = (body.mapping_bundle_id as string | undefined) ?? null;
-      const runId = crypto.randomUUID();
+      const runId = (body.run_id as string | undefined) ?? crypto.randomUUID();
       const startedAt = new Date().toISOString();
 
       await env.DB.prepare(
@@ -121,6 +232,36 @@ export default {
         .run();
 
       return jsonResponse({ run_id: runId, status: "STARTED" });
+    }
+
+    if (segments.length === 2 && segments[0] === "runs" && (request.method === "PATCH" || request.method === "POST")) {
+      const runId = segments[1];
+      const body = (await request.json().catch(() => null)) as JsonRecord | null;
+      if (!body) {
+        return badRequest("invalid_json");
+      }
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      const fields: Array<[string, string]> = [
+        ["status", "status"],
+        ["started_at", "started_at"],
+        ["finished_at", "finished_at"],
+        ["artifact_index_path", "artifact_index_path"],
+        ["error_step", "error_step"],
+        ["error_message", "error_message"]
+      ];
+      for (const [key, column] of fields) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) {
+          updates.push(`${column} = ?`);
+          values.push(body[key]);
+        }
+      }
+      if (updates.length === 0) {
+        return badRequest("no_updates");
+      }
+      values.push(runId);
+      await env.DB.prepare(`UPDATE runs SET ${updates.join(", ")} WHERE run_id = ?`).bind(...values).run();
+      return jsonResponse({ run_id: runId, updated: updates.map((entry) => entry.split(" = ")[0]) });
     }
 
     if (segments.length === 1 && segments[0] === "runs" && request.method === "GET") {

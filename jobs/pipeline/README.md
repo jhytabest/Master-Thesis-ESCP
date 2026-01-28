@@ -5,7 +5,7 @@ Deterministic "CSV in -> artifacts out" pipeline.
 ## Entrypoint
 
 ```
-pipeline --version_id <id> [--mapping_bundle_id <id>]
+pipeline --version_id <id> [--mapping_bundle_id <id>] [--run_id <id>]
 ```
 
 ## Status
@@ -19,4 +19,3 @@ Scaffolded. Steps to implement:
 - Generate reports
 - Train baseline models
 - Write artifacts + manifests
-
