@@ -1,0 +1,35 @@
+substitutions:
+  _REGION: europe-west1
+  _REPO: deeptech-jobs
+  _IMAGE: research-ui
+  _SERVICE: research-ui
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+      - -t
+      - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+      - apps/research-ui
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
+  - name: gcr.io/cloud-builders/gcloud
+    args:
+      - run
+      - services
+      - update
+      - ${_SERVICE}
+      - --region=${_REGION}
+      - --image=europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+
+images:
+  - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:$SHORT_SHA
+  - europe-west9-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE}:latest
