@@ -10,12 +10,17 @@ pipeline --version_id <id> [--mapping_bundle_id <id>] [--run_id <id>]
 
 ## Status
 
-Scaffolded. Steps to implement:
+Implemented:
 
 - Download CSV from R2
-- Parse + clean
-- Apply mapping bundle
-- Derive outcomes
-- Generate reports
-- Train baseline models
+- Generate cohort + basic EDA + quality report
+- Build MVP feature matrix
+- Train baseline models + write metrics/predictions
 - Write artifacts + manifests
+
+Pending:
+
+- Real cleaning + standardization
+- Apply mapping bundles
+- Outcome derivations
+- Expanded modeling and explainability
