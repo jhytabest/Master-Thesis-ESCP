@@ -70,6 +70,8 @@ GCP_PROJECT_ID = env("GCP_PROJECT_ID")
 GCP_LOCATION = env("GCP_LOCATION")
 PIPELINE_JOB_NAME = env("PIPELINE_JOB_NAME")
 PIPELINE_CONTAINER_NAME = env("PIPELINE_CONTAINER_NAME")
+MAPPING_JOB_NAME = env("MAPPING_JOB_NAME")
+MAPPING_CONTAINER_NAME = env("MAPPING_CONTAINER_NAME")
 
 OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID")
 OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET")
@@ -200,6 +202,17 @@ def list_runs() -> List[Dict[str, Any]]:
 
 
 @st.cache_data(ttl=60)
+def list_mapping_bundles() -> List[Dict[str, Any]]:
+  if not WORKER_API_BASE:
+    return []
+  resp = requests.get(f"{WORKER_API_BASE}/mapping_bundles", headers=worker_headers(), timeout=30)
+  if resp.status_code != 200:
+    return []
+  payload = resp.json()
+  return payload.get("mapping_bundles", [])
+
+
+@st.cache_data(ttl=60)
 def list_versions() -> List[Dict[str, Any]]:
   if not WORKER_API_BASE:
     return []
@@ -283,6 +296,41 @@ def execute_pipeline_job(version_id: str, run_id: str, mapping_bundle_id: Option
   return resp.json()
 
 
+def execute_mapping_job(
+  args: List[str],
+  env_vars: Optional[Dict[str, str]] = None,
+  command: Optional[List[str]] = None
+) -> Dict[str, Any]:
+  if not (GCP_PROJECT_ID and GCP_LOCATION and MAPPING_JOB_NAME):
+    raise RuntimeError("Missing mapping job configuration")
+  url = (
+    "https://run.googleapis.com/v2/projects/"
+    f"{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/jobs/{MAPPING_JOB_NAME}:run"
+  )
+  overrides: Dict[str, Any] = {"containerOverrides": []}
+  container_override: Dict[str, Any] = {"args": args, "env": []}
+  if MAPPING_CONTAINER_NAME:
+    container_override["name"] = MAPPING_CONTAINER_NAME
+  if command:
+    container_override["command"] = command
+  if env_vars:
+    for key, value in env_vars.items():
+      container_override["env"].append({"name": key, "value": value})
+  overrides["containerOverrides"].append(container_override)
+
+  payload = {"overrides": overrides}
+  token = gcp_access_token()
+  resp = requests.post(
+    url,
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    json=payload,
+    timeout=30
+  )
+  if resp.status_code >= 300:
+    raise RuntimeError(f"Failed to execute mapping job: {resp.text}")
+  return resp.json()
+
+
 @st.cache_data(ttl=120)
 def r2_get_json(key: str) -> Optional[Dict[str, Any]]:
   if not key:
@@ -305,11 +353,48 @@ def r2_get_parquet(key: str) -> pd.DataFrame:
   return pd.read_parquet(io.BytesIO(raw))
 
 
+@st.cache_data(ttl=120)
+def r2_get_bytes(key: str) -> bytes:
+  if not R2_BUCKET:
+    raise RuntimeError("R2_BUCKET not configured")
+  client = build_s3_client()
+  obj = client.get_object(Bucket=R2_BUCKET, Key=key)
+  return obj["Body"].read()
+
+
+def r2_list_keys(prefix: str) -> List[str]:
+  if not R2_BUCKET:
+    raise RuntimeError("R2_BUCKET not configured")
+  client = build_s3_client()
+  keys: List[str] = []
+  token: Optional[str] = None
+  while True:
+    params: Dict[str, Any] = {"Bucket": R2_BUCKET, "Prefix": prefix}
+    if token:
+      params["ContinuationToken"] = token
+    resp = client.list_objects_v2(**params)
+    for entry in resp.get("Contents", []) or []:
+      key = entry.get("Key")
+      if key:
+        keys.append(key)
+    if not resp.get("IsTruncated"):
+      break
+    token = resp.get("NextContinuationToken")
+  return keys
+
+
 def r2_put_text(key: str, text: str, content_type: str) -> None:
   if not R2_BUCKET:
     raise RuntimeError("R2_BUCKET not configured")
   client = build_s3_client()
   client.put_object(Bucket=R2_BUCKET, Key=key, Body=text.encode("utf-8"), ContentType=content_type)
+
+
+def r2_put_bytes(key: str, data: bytes, content_type: str) -> None:
+  if not R2_BUCKET:
+    raise RuntimeError("R2_BUCKET not configured")
+  client = build_s3_client()
+  client.put_object(Bucket=R2_BUCKET, Key=key, Body=data, ContentType=content_type)
 
 
 def format_pct(value: float) -> str:
@@ -406,6 +491,7 @@ with st.sidebar:
   st.write("Worker API:", WORKER_API_BASE or "not set")
   st.write("R2 bucket:", R2_BUCKET or "not set")
   st.write("Cloud Run job:", PIPELINE_JOB_NAME or "not set")
+  st.write("Mapping job:", MAPPING_JOB_NAME or "not set")
   st.caption("Set configuration via environment variables on Cloud Run.")
 
   user_email = st.session_state.get("user_email")
@@ -421,7 +507,7 @@ with st.sidebar:
   outcome_col = st.selectbox("Outcome", ["has_funding"], index=0)
 
 
-tab_run, tab_analysis, tab_report = st.tabs(["Run pipeline", "Analysis", "Report"])
+tab_run, tab_mapping, tab_analysis, tab_report = st.tabs(["Run pipeline", "Mapping", "Analysis", "Report"])
 
 with tab_run:
   st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -429,7 +515,10 @@ with tab_run:
   version_ids = [row.get("version_id") for row in versions if row.get("version_id")]
   version_id = st.selectbox("Select version", options=version_ids) if version_ids else ""
   version_id = st.text_input("Version ID", value=version_id)
-  mapping_bundle_id = st.text_input("Mapping bundle (optional)")
+  bundles = list_mapping_bundles()
+  bundle_ids = [row.get("mapping_bundle_id") for row in bundles if row.get("mapping_bundle_id")]
+  bundle_choice = st.selectbox("Mapping bundle", options=[""] + bundle_ids)
+  mapping_bundle_id = st.text_input("Mapping bundle (optional)", value=bundle_choice)
   if st.button("Trigger pipeline"):
     if not version_id:
       st.error("Please provide a version_id")
@@ -439,6 +528,101 @@ with tab_run:
           run_id = trigger_run(version_id, mapping_bundle_id or None)
           response = execute_pipeline_job(version_id, run_id, mapping_bundle_id or None)
         st.success(f"Run started: {run_id}")
+        st.json(response)
+      except Exception as exc:
+        st.error(str(exc))
+  st.markdown("</div>", unsafe_allow_html=True)
+
+with tab_mapping:
+  st.markdown("<div class='card'>", unsafe_allow_html=True)
+  st.subheader("AI proposal job")
+  versions = list_versions()
+  version_ids = [row.get("version_id") for row in versions if row.get("version_id")]
+  proposal_version_id = st.selectbox("Proposal version", options=version_ids, key="proposal_version") if version_ids else ""
+  proposal_version_id = st.text_input("Proposal version_id", value=proposal_version_id, key="proposal_version_id")
+  default_prefix = f"mappings/proposals/{proposal_version_id}" if proposal_version_id else "mappings/proposals/"
+  proposal_prefix = st.text_input("Output prefix", value=default_prefix)
+  proposal_model = st.text_input("Gemini model", value=os.getenv("GEMINI_MODEL", "gemini-1.5-pro-002"))
+  if st.button("Run AI proposal job"):
+    if not proposal_version_id:
+      st.error("Please provide a version_id")
+    else:
+      try:
+        with st.spinner("Launching mapping proposal job..."):
+          response = execute_mapping_job(
+            args=["--version_id", proposal_version_id, "--output_prefix", proposal_prefix, "--model", proposal_model],
+            env_vars={
+              "MAPPING_VERSION_ID": proposal_version_id,
+              "MAPPING_OUTPUT_PREFIX": proposal_prefix,
+              "GEMINI_MODEL": proposal_model
+            }
+          )
+        st.success("Proposal job started")
+        st.json(response)
+      except Exception as exc:
+        st.error(str(exc))
+
+  st.divider()
+  st.subheader("Browse proposals")
+  browse_prefix = st.text_input("Prefix to browse", value=proposal_prefix, key="browse_prefix")
+  if browse_prefix:
+    try:
+      keys = r2_list_keys(browse_prefix.rstrip("/") + "/")
+      if not keys:
+        st.info("No objects found for prefix")
+      else:
+        selected_key = st.selectbox("Select object", options=keys)
+        if selected_key:
+          data = r2_get_bytes(selected_key)
+          st.download_button(
+            label="Download",
+            data=data,
+            file_name=os.path.basename(selected_key),
+            mime="text/csv" if selected_key.endswith(".csv") else "application/json"
+          )
+    except Exception as exc:
+      st.error(str(exc))
+
+  st.divider()
+  st.subheader("Upload approved CSV")
+  uploaded = st.file_uploader("Approved CSV", type=["csv"])
+  target_key = st.text_input("Destination key", value="")
+  if st.button("Upload approved file"):
+    if not uploaded:
+      st.error("Please select a CSV file to upload")
+    elif not target_key:
+      st.error("Please provide a destination key in R2")
+    else:
+      try:
+        r2_put_bytes(target_key, uploaded.getvalue(), "text/csv")
+        st.success(f"Uploaded to {target_key}")
+      except Exception as exc:
+        st.error(str(exc))
+
+  st.divider()
+  st.subheader("Freeze mapping bundle")
+  freeze_prefix = st.text_input("Proposal prefix", value=proposal_prefix, key="freeze_prefix")
+  bundle_id = st.text_input("Output bundle id", value="")
+  approved_by = st.text_input("Approved by", value=st.session_state.get("user_email", ""))
+  if st.button("Run freeze job"):
+    if not freeze_prefix or not bundle_id:
+      st.error("Provide proposal prefix and output bundle id")
+    else:
+      try:
+        with st.spinner("Launching mapping freeze job..."):
+          response = execute_mapping_job(
+            args=[
+              "--proposal_prefix", freeze_prefix,
+              "--output_bundle_id", bundle_id,
+              "--approved_by", approved_by
+            ],
+            env_vars={
+              "MAPPING_BUNDLE_ID": bundle_id,
+              "MAPPING_PROPOSAL_PREFIX": freeze_prefix
+            },
+            command=["python", "-m", "mapping.freeze"]
+          )
+        st.success("Freeze job started")
         st.json(response)
       except Exception as exc:
         st.error(str(exc))

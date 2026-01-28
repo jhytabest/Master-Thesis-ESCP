@@ -21,6 +21,5 @@ Implemented:
 Pending:
 
 - Real cleaning + standardization
-- Apply mapping bundles
 - Outcome derivations
 - Expanded modeling and explainability

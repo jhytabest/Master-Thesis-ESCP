@@ -45,11 +45,17 @@ DEFAULT_FEATURE_LIST = [
 
 COLUMN_ALIASES = {
   "company_status_raw": ["COMPANY STATUS", "COMPANY_STATUS", "company_status"],
+  "company_status_clean": ["company_status_clean", "COMPANY_STATUS_CLEAN"],
   "target_total_funding_raw": ["target_total_funding", "TARGET_TOTAL_FUNDING", "TARGET TOTAL FUNDING"],
+  "target_total_funding_eur": ["target_total_funding_eur", "TARGET_TOTAL_FUNDING_EUR"],
   "last_funding_raw": ["LAST FUNDING", "LAST_FUNDING", "last_funding"],
+  "last_funding_eur": ["last_funding_eur", "LAST_FUNDING_EUR"],
   "valuation_raw": ["VALUATION (EUR)", "VALUATION", "valuation", "valuation_eur"],
+  "valuation_eur": ["valuation_eur", "VALUATION_EUR"],
   "target_rounds_raw": ["target_rounds", "TARGET_ROUNDS", "TARGET ROUNDS"],
+  "target_rounds_num": ["target_rounds_num", "TARGET_ROUNDS_NUM"],
   "growth_stage_raw": ["GROWTH STAGE", "GROWTH_STAGE", "growth_stage"],
+  "stage_ordinal": ["stage_ordinal", "STAGE_ORDINAL"],
   "first_funding_date_raw": ["FIRST FUNDING DATE", "FIRST_FUNDING_DATE", "first_funding_date"],
   "company_siren": ["SIREN", "company_siren", "siren"],
   "source_id": ["id", "ID"]
@@ -88,6 +94,11 @@ def sha256_hex(data: bytes) -> str:
 
 def upload_bytes(client: boto3.client, bucket: str, key: str, data: bytes, content_type: str) -> None:
   client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+
+
+def download_bytes(client: boto3.client, bucket: str, key: str) -> bytes:
+  obj = client.get_object(Bucket=bucket, Key=key)
+  return obj["Body"].read()
 
 
 def update_run(run_id: str, payload: Dict[str, Any]) -> None:
@@ -149,6 +160,150 @@ def normalize_header(name: str) -> str:
   return re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
 
 
+def normalize_raw_value(value: Any) -> Optional[str]:
+  if is_missing_value(value):
+    return None
+  return str(value).strip()
+
+
+def split_list_value(value: Any, delimiters: List[str]) -> Optional[List[str]]:
+  if is_missing_value(value):
+    return None
+  text = str(value)
+  if not delimiters:
+    return [text.strip()] if text.strip() else None
+  pattern = "|".join(re.escape(delim) for delim in delimiters)
+  parts = [part.strip() for part in re.split(pattern, text) if part.strip()]
+  return parts or None
+
+
+def load_mapping_bundle(
+  client: boto3.client,
+  bucket: str,
+  mapping_bundle_id: str
+) -> Tuple[Dict[str, Any], str]:
+  manifest_key = f"mappings/{mapping_bundle_id}/bundle_manifest.json"
+  raw = download_bytes(client, bucket, manifest_key)
+  return json.loads(raw.decode("utf-8")), sha256_hex(raw)
+
+
+def apply_mapping_bundle(
+  df: pd.DataFrame,
+  client: boto3.client,
+  bucket: str,
+  bundle_manifest: Dict[str, Any]
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+  mapping_stats = {
+    "mapping_unmapped_values": 0,
+    "list_parse_columns": 0,
+    "numeric_parse_columns": 0,
+    "consolidation_columns": 0
+  }
+  columns = bundle_manifest.get("columns") or []
+  for column_spec in columns:
+    raw_column = column_spec.get("column")
+    if not raw_column or raw_column not in df.columns:
+      continue
+    action = column_spec.get("action")
+    normalized_column = column_spec.get("normalized_column") or normalize_header(raw_column)
+    if action == "map_values":
+      mapping_path = column_spec.get("mapping_path")
+      if not mapping_path:
+        raise RuntimeError(f"Missing mapping_path for column {raw_column}")
+      mapping_bytes = download_bytes(client, bucket, mapping_path)
+      mapping_df = pd.read_csv(io.BytesIO(mapping_bytes), dtype=str, keep_default_na=False)
+      if not {"raw_value", "normalized_value"}.issubset(mapping_df.columns):
+        raise RuntimeError(f"Invalid mapping CSV schema for {raw_column}")
+      mapping = {
+        normalize_raw_value(row["raw_value"]): row["normalized_value"]
+        for _, row in mapping_df.iterrows()
+        if normalize_raw_value(row.get("raw_value")) is not None
+      }
+      unmapped = 0
+
+      def map_value(value: Any) -> Optional[str]:
+        nonlocal unmapped
+        raw = normalize_raw_value(value)
+        if raw is None:
+          return None
+        normalized = mapping.get(raw)
+        if normalized is None:
+          unmapped += 1
+          return None
+        return normalized
+
+      df[normalized_column] = df[raw_column].apply(map_value)
+      if unmapped:
+        mapping_stats["mapping_unmapped_values"] += int(unmapped)
+    elif action == "parse_numeric":
+      parsed, failures = parse_numeric_series(df[raw_column])
+      df[normalized_column] = pd.Series(parsed, index=df.index, dtype="float")
+      mapping_stats["numeric_parse_columns"] += 1
+      if failures:
+        mapping_stats.setdefault("numeric_parse_failures", 0)
+        mapping_stats["numeric_parse_failures"] += int(failures)
+    elif action == "split_list":
+      delimiters = column_spec.get("list_delimiters") or []
+      df[normalized_column] = df[raw_column].apply(lambda value: split_list_value(value, delimiters))
+      mapping_stats["list_parse_columns"] += 1
+    elif action in {"skip", "consolidate"}:
+      continue
+    else:
+      raise RuntimeError(f"Unknown mapping action: {action}")
+
+  consolidations_path = bundle_manifest.get("consolidations_path")
+  if consolidations_path:
+    consolidations_bytes = download_bytes(client, bucket, consolidations_path)
+    consolidations = json.loads(consolidations_bytes.decode("utf-8"))
+    for rule in consolidations or []:
+      target = rule.get("target_column")
+      sources = rule.get("source_columns") or []
+      method = rule.get("method") or "first_non_empty"
+      if not target or not sources:
+        continue
+      missing_sources = [col for col in sources if col not in df.columns]
+      if missing_sources:
+        continue
+
+      if method == "first_non_empty":
+        def pick_value(row: pd.Series) -> Any:
+          for col in sources:
+            value = row[col]
+            if not is_missing_value(value):
+              return value
+          return None
+        df[target] = df.apply(pick_value, axis=1)
+      elif method == "merge_list":
+        def merge_value(row: pd.Series) -> Optional[List[str]]:
+          merged: List[str] = []
+          for col in sources:
+            value = row[col]
+            if is_missing_value(value):
+              continue
+            if isinstance(value, list):
+              items = value
+            else:
+              items = [str(value).strip()]
+            for item in items:
+              if item and item not in merged:
+                merged.append(item)
+          return merged or None
+        df[target] = df.apply(merge_value, axis=1)
+      elif method == "numeric_merge":
+        def merge_numeric(row: pd.Series) -> Optional[float]:
+          for col in sources:
+            parsed = parse_numeric_value(row[col])
+            if parsed is not None:
+              return parsed
+          return None
+        df[target] = df.apply(merge_numeric, axis=1)
+      mapping_stats["consolidation_columns"] += 1
+
+  if mapping_stats.get("mapping_unmapped_values", 0) > 0:
+    raise RuntimeError("Mapping bundle missing values for some raw entries")
+  return df, mapping_stats
+
+
 def build_column_lookup(columns: List[str]) -> Dict[str, str]:
   lookup: Dict[str, str] = {}
   for col in columns:
@@ -205,26 +360,32 @@ def is_missing_value(value: Any) -> bool:
   return text in {"", "nan", "#n/a", "n/a", "na", "none", "null"}
 
 
+def parse_numeric_value(value: Any) -> Optional[float]:
+  if is_missing_value(value):
+    return None
+  if isinstance(value, (int, float)) and not pd.isna(value):
+    return float(value)
+  text = str(value).strip().replace(",", ".")
+  if not text:
+    return None
+  numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
+  if not numbers:
+    return None
+  if "-" in text and len(numbers) >= 2:
+    vals = [float(num) for num in numbers[:2]]
+    return sum(vals) / len(vals)
+  return float(numbers[0])
+
+
 def parse_numeric_series(series: pd.Series) -> Tuple[pd.Series, int]:
   failures = 0
 
   def parse_value(value: Any) -> Optional[float]:
     nonlocal failures
-    if is_missing_value(value):
-      return None
-    if isinstance(value, (int, float)) and not pd.isna(value):
-      return float(value)
-    text = str(value).strip().replace(",", ".")
-    if not text:
-      return None
-    numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
-    if not numbers:
+    parsed = parse_numeric_value(value)
+    if parsed is None and not is_missing_value(value):
       failures += 1
-      return None
-    if "-" in text and len(numbers) >= 2:
-      vals = [float(num) for num in numbers[:2]]
-      return sum(vals) / len(vals)
-    return float(numbers[0])
+    return parsed
 
   parsed = series.apply(parse_value)
   return parsed.astype("float"), failures
@@ -280,6 +441,12 @@ def build_feature_frame(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int],
       return pd.Series([None] * len(df))
     return df[col_name]
 
+  def pick_prefer_normalized(normalized_key: str, raw_key: str) -> pd.Series:
+    col_name = find_column(lookup, COLUMN_ALIASES.get(normalized_key, []))
+    if col_name:
+      return df[col_name]
+    return pick(raw_key)
+
   numeric_failures = 0
   features = pd.DataFrame({"row_id": df.index.astype(int)})
   meta_cols = ["row_id"]
@@ -294,27 +461,31 @@ def build_feature_frame(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int],
     features["company_siren"] = df[siren_col]
     meta_cols.append("company_siren")
 
-  status_raw = pick("company_status_raw")
+  status_raw = pick_prefer_normalized("company_status_clean", "company_status_raw")
   features["company_status_clean"] = status_raw.apply(normalize_status)
 
-  target_total_raw = pick("target_total_funding_raw")
+  target_total_raw = pick_prefer_normalized("target_total_funding_eur", "target_total_funding_raw")
   features["target_total_funding_eur"], failures = parse_numeric_series(target_total_raw)
   numeric_failures += failures
 
-  last_funding_raw = pick("last_funding_raw")
+  last_funding_raw = pick_prefer_normalized("last_funding_eur", "last_funding_raw")
   features["last_funding_eur"], failures = parse_numeric_series(last_funding_raw)
   numeric_failures += failures
 
-  valuation_raw = pick("valuation_raw")
+  valuation_raw = pick_prefer_normalized("valuation_eur", "valuation_raw")
   features["valuation_eur"], failures = parse_numeric_series(valuation_raw)
   numeric_failures += failures
 
-  target_rounds_raw = pick("target_rounds_raw")
+  target_rounds_raw = pick_prefer_normalized("target_rounds_num", "target_rounds_raw")
   features["target_rounds_num"], failures = parse_numeric_series(target_rounds_raw)
   numeric_failures += failures
 
-  growth_stage_raw = pick("growth_stage_raw")
-  features["stage_ordinal"] = growth_stage_raw.apply(derive_stage_ordinal)
+  stage_ordinal = find_column(lookup, COLUMN_ALIASES.get("stage_ordinal", []))
+  if stage_ordinal:
+    features["stage_ordinal"], _ = parse_numeric_series(df[stage_ordinal])
+  else:
+    growth_stage_raw = pick("growth_stage_raw")
+    features["stage_ordinal"] = growth_stage_raw.apply(derive_stage_ordinal)
 
   funding_date_raw = pick("first_funding_date_raw")
   has_funding = (
@@ -613,6 +784,11 @@ def main() -> None:
 
     df = pd.read_csv(io.BytesIO(raw_bytes))
     missing = df.isna().sum().to_dict()
+    mapping_manifest_hash = None
+    mapping_stats: Dict[str, Any] = {}
+    if mapping_bundle_id:
+      bundle_manifest, mapping_manifest_hash = load_mapping_bundle(client, bucket, mapping_bundle_id)
+      df, mapping_stats = apply_mapping_bundle(df, client, bucket, bundle_manifest)
 
     quality = {
       "row_count": int(len(df)),
@@ -626,6 +802,8 @@ def main() -> None:
     upload_bytes(client, bucket, cohort_key, cohort_buffer.getvalue(), "application/octet-stream")
 
     features_df, parsing_stats, meta_cols = build_feature_frame(df)
+    if mapping_stats:
+      parsing_stats.update(mapping_stats)
     features_buffer = io.BytesIO()
     features_df.to_parquet(features_buffer, index=False)
     features_key = f"derived/{version_id}/features.parquet"
@@ -680,7 +858,7 @@ def main() -> None:
       "code_git_sha": os.getenv("CODE_GIT_SHA", "unknown"),
       "container_image_digest": os.getenv("IMAGE_DIGEST", "unknown"),
       "mapping_bundle_id": mapping_bundle_id,
-      "mapping_manifest_hash": None,
+      "mapping_manifest_hash": mapping_manifest_hash,
       "parsing_stats": parsing_stats,
       "anomaly_counts": {},
       "config_hash": os.getenv("CONFIG_HASH", "unknown")

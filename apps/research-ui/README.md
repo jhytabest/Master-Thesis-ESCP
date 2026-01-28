@@ -21,6 +21,8 @@ Cloud Run Jobs:
 - `GCP_LOCATION`
 - `PIPELINE_JOB_NAME`
 - `PIPELINE_CONTAINER_NAME` (optional, set if the job has a named container)
+- `MAPPING_JOB_NAME`
+- `MAPPING_CONTAINER_NAME` (optional, set if the job has a named container)
 
 Google OAuth (app-level):
 - `GOOGLE_OAUTH_CLIENT_ID`

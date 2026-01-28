@@ -27,6 +27,15 @@ type VersionRow = {
   schema_json: string;
 };
 
+type MappingBundleRow = {
+  mapping_bundle_id: string;
+  created_at: string;
+  source_version_id: string | null;
+  columns_json: string | null;
+  artifact_path: string;
+  manifest_sha256: string;
+};
+
 function jsonResponse(body: JsonRecord | JsonRecord[], status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
@@ -276,6 +285,49 @@ export default {
         "SELECT * FROM versions ORDER BY created_at DESC LIMIT 100"
       ).all<VersionRow>();
       return jsonResponse({ versions: result.results ?? [] });
+    }
+
+    if (segments.length === 2 && segments[0] === "mapping_bundles" && segments[1] === "register") {
+      if (request.method !== "POST") {
+        return badRequest("method_not_allowed");
+      }
+      const body = (await request.json().catch(() => null)) as JsonRecord | null;
+      if (!body) {
+        return badRequest("invalid_json");
+      }
+      const mappingBundleId = body.mapping_bundle_id as string | undefined;
+      const createdAt = (body.created_at as string | undefined) ?? new Date().toISOString();
+      const sourceVersionId = (body.source_version_id as string | undefined) ?? null;
+      const columnsJson = (body.columns_json as string | undefined) ?? null;
+      const artifactPath = body.artifact_path as string | undefined;
+      const manifestSha = body.manifest_sha256 as string | undefined;
+      if (!mappingBundleId || !artifactPath || !manifestSha) {
+        return badRequest("missing_required_fields");
+      }
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO mapping_bundles (mapping_bundle_id, created_at, source_version_id, columns_json, artifact_path, manifest_sha256) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+        .bind(mappingBundleId, createdAt, sourceVersionId, columnsJson, artifactPath, manifestSha)
+        .run();
+      return jsonResponse({ mapping_bundle_id: mappingBundleId, created_at: createdAt });
+    }
+
+    if (segments.length === 1 && segments[0] === "mapping_bundles" && request.method === "GET") {
+      const result = await env.DB.prepare(
+        "SELECT * FROM mapping_bundles ORDER BY created_at DESC LIMIT 100"
+      ).all<MappingBundleRow>();
+      return jsonResponse({ mapping_bundles: result.results ?? [] });
+    }
+
+    if (segments.length === 2 && segments[0] === "mapping_bundles" && request.method === "GET") {
+      const bundleId = segments[1];
+      const result = await env.DB.prepare("SELECT * FROM mapping_bundles WHERE mapping_bundle_id = ?")
+        .bind(bundleId)
+        .all<MappingBundleRow>();
+      if (!result.results || result.results.length === 0) {
+        return jsonResponse({ error: "not_found" }, 404);
+      }
+      return jsonResponse({ mapping_bundle: result.results[0] });
     }
 
     if (segments.length === 2 && segments[0] === "runs" && request.method === "GET") {
