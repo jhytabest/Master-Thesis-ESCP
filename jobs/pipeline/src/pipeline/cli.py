@@ -503,6 +503,7 @@ def train_model(
   else:
     predictions_df["pred_stage_ordinal"] = predictions
 
+  class_distribution = {str(k): int(v) for k, v in y.value_counts(dropna=False).to_dict().items()}
   payload = {
     "model_id": model_id,
     "status": "TRAINED",
@@ -516,7 +517,7 @@ def train_model(
     "features_used": usable_features,
     "dropped_features": dropped_features,
     "metrics": metrics,
-    "class_distribution": y.value_counts(dropna=False).to_dict(),
+    "class_distribution": class_distribution,
     "row_count": int(len(features_df)),
     "labeled_rows": int(mask.sum()),
     "train_rows": int(len(y_train)),
@@ -567,6 +568,9 @@ def train_baseline_models(
       meta_cols=meta_cols
     )
     if output.get("status") == "SKIPPED":
+      class_distribution = output.get("class_distribution")
+      if isinstance(class_distribution, dict):
+        class_distribution = {str(k): int(v) for k, v in class_distribution.items()}
       output["metrics"] = {
         "model_id": spec["model_id"],
         "status": "SKIPPED",
@@ -575,7 +579,7 @@ def train_baseline_models(
         "dataset_sha256": dataset_sha,
         "reason": output.get("reason"),
         "dropped_features": output.get("dropped_features"),
-        "class_distribution": output.get("class_distribution"),
+        "class_distribution": class_distribution,
         "labeled_rows": output.get("labeled_rows")
       }
     outputs.append(output)
