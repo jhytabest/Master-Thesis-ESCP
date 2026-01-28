@@ -2,6 +2,10 @@ name = "deeptech-worker"
 main = "src/index.ts"
 compatibility_date = "2026-01-27"
 
+[observability.logs]
+enabled = false
+invocation_logs = true
+
 [[d1_databases]]
 binding = "DB"
 database_name = "deeptech-meta"

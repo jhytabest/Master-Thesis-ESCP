@@ -55,6 +55,10 @@ def update_run(run_id: str, payload: Dict[str, Any]) -> None:
   req = urlrequest.Request(url, data=data, method="PATCH")
   req.add_header("Authorization", f"Bearer {token}")
   req.add_header("Content-Type", "application/json")
+  req.add_header(
+    "User-Agent",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  )
   cf_client_id = os.getenv("CF_ACCESS_CLIENT_ID")
   cf_client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
   if cf_client_id and cf_client_secret:
