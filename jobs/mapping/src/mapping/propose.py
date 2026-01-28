@@ -208,13 +208,13 @@ def main() -> None:
   output_prefix = output_prefix.rstrip("/")
 
   bucket = env_or_error("R2_BUCKET")
-  client = build_s3_client()
+  s3_client = build_s3_client()
 
   source_key = f"raw/{version_id}/dataset.csv"
-  raw_bytes = download_bytes(client, bucket, source_key)
+  raw_bytes = download_bytes(s3_client, bucket, source_key)
   df = pd.read_csv(io.BytesIO(raw_bytes), dtype=str, keep_default_na=False)
 
-  client = build_client()
+  ai_client = build_client()
 
   column_summaries: List[Dict[str, Any]] = []
   for idx, column in enumerate(df.columns, start=1):
@@ -253,7 +253,7 @@ def main() -> None:
       prompt_hash = sha256_text(prompt)
       try:
         log(f"[column {column}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
-        output = safe_json_loads(generate_with_timeout(client, args.model, prompt))
+        output = safe_json_loads(generate_with_timeout(ai_client, args.model, prompt))
         if not isinstance(output, dict):
           raise ValueError("expected JSON object")
         action = output.get("action")
@@ -323,7 +323,7 @@ def main() -> None:
     csv_df = pd.DataFrame(rows, columns=["raw_value", "normalized_value", "confidence", "approved", "notes"])
     csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
     csv_key = f"{output_prefix}/{column}.csv"
-    upload_bytes(client, bucket, csv_key, csv_bytes, "text/csv")
+    upload_bytes(s3_client, bucket, csv_key, csv_bytes, "text/csv")
 
     manifest = {
       "column": column,
@@ -342,7 +342,7 @@ def main() -> None:
       "generated_at": now_iso()
     }
     manifest_key = f"{output_prefix}/{column}.manifest.json"
-    upload_bytes(client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
+    upload_bytes(s3_client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
 
     column_summaries.append({
       "column": column,
@@ -356,7 +356,7 @@ def main() -> None:
   consolidation_input_hash = sha256_text(json.dumps(column_summaries, ensure_ascii=False, separators=(",", ":")))
   log("[consolidations] start")
   try:
-    consolidations = safe_json_loads(generate_with_timeout(client, args.model, consolidation_prompt))
+    consolidations = safe_json_loads(generate_with_timeout(ai_client, args.model, consolidation_prompt))
     if not isinstance(consolidations, list):
       raise ValueError("expected JSON list")
   except Exception as exc:
@@ -365,7 +365,7 @@ def main() -> None:
 
   consolidations_key = f"{output_prefix}/consolidations.json"
   upload_bytes(
-    client,
+    s3_client,
     bucket,
     consolidations_key,
     json.dumps(consolidations, indent=2).encode("utf-8"),
@@ -381,7 +381,7 @@ def main() -> None:
   }
   consolidations_manifest_key = f"{output_prefix}/consolidations.manifest.json"
   upload_bytes(
-    client,
+    s3_client,
     bucket,
     consolidations_manifest_key,
     json.dumps(consolidations_manifest, indent=2).encode("utf-8"),
