@@ -271,6 +271,13 @@ export default {
       return jsonResponse({ runs: result.results ?? [] });
     }
 
+    if (segments.length === 1 && segments[0] === "versions" && request.method === "GET") {
+      const result = await env.DB.prepare(
+        "SELECT * FROM versions ORDER BY created_at DESC LIMIT 100"
+      ).all<VersionRow>();
+      return jsonResponse({ versions: result.results ?? [] });
+    }
+
     if (segments.length === 2 && segments[0] === "runs" && request.method === "GET") {
       const runId = segments[1];
       const result = await env.DB.prepare("SELECT * FROM runs WHERE run_id = ?")

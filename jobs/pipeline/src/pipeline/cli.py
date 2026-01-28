@@ -584,18 +584,21 @@ def train_baseline_models(
 
 def main() -> None:
   parser = argparse.ArgumentParser(description="Deterministic pipeline job")
-  parser.add_argument("--version_id", required=True)
+  parser.add_argument("--version_id")
   parser.add_argument("--mapping_bundle_id")
   parser.add_argument("--run_id")
   args = parser.parse_args()
 
-  run_id = args.run_id
+  version_id = args.version_id or os.getenv("PIPELINE_VERSION_ID")
+  mapping_bundle_id = args.mapping_bundle_id or os.getenv("PIPELINE_MAPPING_BUNDLE_ID")
+  run_id = args.run_id or os.getenv("PIPELINE_RUN_ID")
+  if not version_id:
+    raise RuntimeError("Missing required version_id")
   started_at = now_iso()
   if run_id:
     update_run(run_id, {"status": "STARTED", "started_at": started_at})
 
   bucket = env_or_error("R2_BUCKET")
-  version_id = args.version_id
   source_key = f"raw/{version_id}/dataset.csv"
 
   client = build_s3_client()
@@ -672,7 +675,7 @@ def main() -> None:
       "run_id": run_id,
       "code_git_sha": os.getenv("CODE_GIT_SHA", "unknown"),
       "container_image_digest": os.getenv("IMAGE_DIGEST", "unknown"),
-      "mapping_bundle_id": args.mapping_bundle_id,
+      "mapping_bundle_id": mapping_bundle_id,
       "mapping_manifest_hash": None,
       "parsing_stats": parsing_stats,
       "anomaly_counts": {},
