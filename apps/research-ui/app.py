@@ -130,8 +130,12 @@ def require_google_login() -> None:
   query_params = st.query_params
   code = query_params.get("code")
   state = query_params.get("state")
-  expected_state = st.session_state.get("oauth_state")
+  if isinstance(code, list):
+    code = code[0] if code else None
+  if isinstance(state, list):
+    state = state[0] if state else None
 
+  expected_state = st.session_state.get("oauth_state")
   if not expected_state:
     expected_state = secrets.token_urlsafe(16)
     st.session_state["oauth_state"] = expected_state
@@ -139,6 +143,8 @@ def require_google_login() -> None:
   if code:
     try:
       if state and expected_state and state != expected_state:
+        st.query_params.clear()
+        st.session_state["oauth_state"] = secrets.token_urlsafe(16)
         raise RuntimeError("OAuth state mismatch. Please try again.")
       _, claims = exchange_code_for_tokens(code)
       email = claims.get("email")
