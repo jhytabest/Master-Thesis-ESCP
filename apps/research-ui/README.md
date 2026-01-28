@@ -22,6 +22,12 @@ Cloud Run Jobs:
 - `PIPELINE_JOB_NAME`
 - `PIPELINE_CONTAINER_NAME` (optional, set if the job has a named container)
 
+Google OAuth (app-level):
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_REDIRECT_URI` (e.g., https://research.deeptech-master-thesis.org)
+- `ALLOWED_EMAIL_DOMAIN` (default: edu.escp.eu)
+
 ## Local run
 
 ```

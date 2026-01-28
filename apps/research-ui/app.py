@@ -1,8 +1,10 @@
 import io
 import json
 import os
+import secrets
+import urllib.parse
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import pandas as pd
@@ -10,6 +12,7 @@ import requests
 import streamlit as st
 from google.auth import default as google_auth_default
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token as google_id_token
 
 
 st.set_page_config(page_title="Deeptech Research Console", layout="wide")
@@ -67,6 +70,95 @@ GCP_PROJECT_ID = env("GCP_PROJECT_ID")
 GCP_LOCATION = env("GCP_LOCATION")
 PIPELINE_JOB_NAME = env("PIPELINE_JOB_NAME")
 PIPELINE_CONTAINER_NAME = env("PIPELINE_CONTAINER_NAME")
+
+OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID")
+OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET")
+OAUTH_REDIRECT_URI = env("GOOGLE_OAUTH_REDIRECT_URI")
+ALLOWED_EMAIL_DOMAIN = env("ALLOWED_EMAIL_DOMAIN", "edu.escp.eu")
+
+
+def build_oauth_login_url(state: str) -> str:
+  if not (OAUTH_CLIENT_ID and OAUTH_REDIRECT_URI):
+    return ""
+  params = {
+    "client_id": OAUTH_CLIENT_ID,
+    "redirect_uri": OAUTH_REDIRECT_URI,
+    "response_type": "code",
+    "scope": "openid email profile",
+    "access_type": "offline",
+    "prompt": "select_account",
+    "state": state,
+    "hd": ALLOWED_EMAIL_DOMAIN
+  }
+  return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+
+
+def exchange_code_for_tokens(code: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+  if not (OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and OAUTH_REDIRECT_URI):
+    raise RuntimeError("Missing Google OAuth configuration")
+  payload = {
+    "code": code,
+    "client_id": OAUTH_CLIENT_ID,
+    "client_secret": OAUTH_CLIENT_SECRET,
+    "redirect_uri": OAUTH_REDIRECT_URI,
+    "grant_type": "authorization_code"
+  }
+  response = requests.post("https://oauth2.googleapis.com/token", data=payload, timeout=30)
+  if response.status_code != 200:
+    raise RuntimeError(f"Token exchange failed: {response.text}")
+  token_payload = response.json()
+  id_token_value = token_payload.get("id_token")
+  if not id_token_value:
+    raise RuntimeError("No id_token returned from Google")
+  claims = google_id_token.verify_oauth2_token(id_token_value, GoogleAuthRequest(), OAUTH_CLIENT_ID)
+  return token_payload, claims
+
+
+def require_google_login() -> None:
+  if st.session_state.get("user_email"):
+    return
+
+  st.title("Deeptech Research Console")
+  st.markdown("<div class='card'>", unsafe_allow_html=True)
+  st.subheader("Sign in with Google")
+  st.write("Access is restricted to approved educational accounts.")
+
+  if not (OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET and OAUTH_REDIRECT_URI):
+    st.error("OAuth is not configured. Set GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI.")
+    st.stop()
+
+  query_params = st.query_params
+  code = query_params.get("code")
+  state = query_params.get("state")
+  expected_state = st.session_state.get("oauth_state")
+
+  if not expected_state:
+    expected_state = secrets.token_urlsafe(16)
+    st.session_state["oauth_state"] = expected_state
+
+  if code:
+    try:
+      if state and expected_state and state != expected_state:
+        raise RuntimeError("OAuth state mismatch. Please try again.")
+      _, claims = exchange_code_for_tokens(code)
+      email = claims.get("email")
+      email_verified = claims.get("email_verified")
+      if not email or not email_verified:
+        raise RuntimeError("Google account email is not verified.")
+      if not str(email).lower().endswith(f"@{ALLOWED_EMAIL_DOMAIN}"):
+        raise RuntimeError(f"Access restricted to @{ALLOWED_EMAIL_DOMAIN} accounts.")
+      st.session_state["user_email"] = email
+      st.session_state["user_name"] = claims.get("name") or email
+      st.query_params.clear()
+      st.success(f"Signed in as {email}")
+      st.stop()
+    except Exception as exc:
+      st.error(str(exc))
+
+  auth_url = build_oauth_login_url(expected_state)
+  st.link_button("Sign in with Google", auth_url, type="primary")
+  st.markdown("</div>", unsafe_allow_html=True)
+  st.stop()
 
 
 @st.cache_resource
@@ -301,6 +393,7 @@ def build_report(version_id: str, metrics: List[Dict[str, Any]], numeric_summary
 
   return "\n".join(lines)
 
+require_google_login()
 
 st.title("Deeptech Research Console")
 
@@ -310,6 +403,15 @@ with st.sidebar:
   st.write("R2 bucket:", R2_BUCKET or "not set")
   st.write("Cloud Run job:", PIPELINE_JOB_NAME or "not set")
   st.caption("Set configuration via environment variables on Cloud Run.")
+
+  user_email = st.session_state.get("user_email")
+  if user_email:
+    st.subheader("Signed in")
+    st.write(user_email)
+    if st.button("Sign out"):
+      st.session_state.clear()
+      st.query_params.clear()
+      st.rerun()
 
   st.subheader("Analysis settings")
   outcome_col = st.selectbox("Outcome", ["has_funding"], index=0)
