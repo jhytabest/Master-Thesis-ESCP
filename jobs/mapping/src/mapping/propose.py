@@ -7,8 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import vertexai
-from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
+from google import genai
+from google.genai import types as genai_types
 
 from mapping.utils import (
   build_s3_client,
@@ -31,11 +31,18 @@ MAX_MODEL_ATTEMPTS = 3
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
 
 
-def build_model(model_name: str) -> GenerativeModel:
+def build_client() -> genai.Client:
   project = env_or_error("GCP_PROJECT_ID")
-  location = os.getenv("GCP_LOCATION", "us-central1")
-  vertexai.init(project=project, location=location)
-  return GenerativeModel(model_name)
+  location = os.getenv("GCP_LOCATION", "global")
+  return genai.Client(
+    vertexai=True,
+    project=project,
+    location=location,
+    http_options=genai_types.HttpOptions(
+      api_version="v1",
+      timeout=MODEL_TIMEOUT_SECONDS * 1000
+    )
+  )
 
 
 def detect_column_type(values: List[str], numeric_failure_rate: float, list_delimiters: List[str]) -> str:
@@ -88,12 +95,14 @@ def log(message: str) -> None:
   print(message, file=sys.stdout, flush=True)
 
 
-def generate_with_timeout(model: GenerativeModel, prompt: str) -> str:
+def generate_with_timeout(client: genai.Client, model_name: str, prompt: str) -> str:
   def _call() -> str:
-    response = model.generate_content(
-      prompt,
-      generation_config=GenerationConfig(
-        temperature=0.2,
+    response = client.models.generate_content(
+      model=model_name,
+      contents=prompt,
+      config=genai_types.GenerateContentConfig(
+        temperature=0,
+        candidate_count=1,
         response_mime_type="application/json"
       )
     )
@@ -191,7 +200,7 @@ def main() -> None:
   parser = argparse.ArgumentParser(description="Propose mapping bundle")
   parser.add_argument("--version_id", required=True)
   parser.add_argument("--output_prefix")
-  parser.add_argument("--model", default=os.getenv("GEMINI_MODEL", "gemini-1.5-pro-002"))
+  parser.add_argument("--model", default=os.getenv("GEMINI_MODEL", "gemini-3-flash-preview"))
   args = parser.parse_args()
 
   version_id = args.version_id
@@ -205,7 +214,7 @@ def main() -> None:
   raw_bytes = download_bytes(client, bucket, source_key)
   df = pd.read_csv(io.BytesIO(raw_bytes), dtype=str, keep_default_na=False)
 
-  model = build_model(args.model)
+  client = build_client()
 
   column_summaries: List[Dict[str, Any]] = []
   for idx, column in enumerate(df.columns, start=1):
@@ -244,7 +253,7 @@ def main() -> None:
       prompt_hash = sha256_text(prompt)
       try:
         log(f"[column {column}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
-        output = safe_json_loads(generate_with_timeout(model, prompt))
+        output = safe_json_loads(generate_with_timeout(client, args.model, prompt))
         if not isinstance(output, dict):
           raise ValueError("expected JSON object")
         action = output.get("action")
@@ -346,9 +355,13 @@ def main() -> None:
   consolidation_prompt_hash = sha256_text(consolidation_prompt)
   consolidation_input_hash = sha256_text(json.dumps(column_summaries, ensure_ascii=False, separators=(",", ":")))
   log("[consolidations] start")
-  consolidations = safe_json_loads(generate_with_timeout(model, consolidation_prompt))
-  if not isinstance(consolidations, list):
-    raise RuntimeError("Invalid consolidations response: expected JSON list")
+  try:
+    consolidations = safe_json_loads(generate_with_timeout(client, args.model, consolidation_prompt))
+    if not isinstance(consolidations, list):
+      raise ValueError("expected JSON list")
+  except Exception as exc:
+    log(f"[consolidations] error: {exc}")
+    consolidations = []
 
   consolidations_key = f"{output_prefix}/consolidations.json"
   upload_bytes(
