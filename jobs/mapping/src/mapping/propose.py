@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,7 @@ from mapping.utils import (
 ALLOWED_ACTIONS = {"map_values", "parse_numeric", "split_list", "consolidate", "skip"}
 MAX_MODEL_ATTEMPTS = 3
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
+GROUP_SAMPLE_ROWS = int(os.getenv("GROUP_SAMPLE_ROWS", "20"))
 
 
 def build_client() -> genai.Client:
@@ -79,6 +81,67 @@ def build_prompt(context: Dict[str, Any]) -> str:
     "- Prefer skip for free-text fields.\n"
     "Context JSON:\n"
     f"{json.dumps(context, ensure_ascii=False, indent=2)}\n"
+  )
+
+
+def build_grouping_prompt(columns: List[str], sample_rows: List[Dict[str, Any]]) -> str:
+  return (
+    "You are a data cleaning assistant. Group related columns into coherent bundles.\n"
+    "Return ONLY valid JSON with this schema:\n"
+    "{\n"
+    '  "groups": [\n'
+    '    {"group_name": "location", "columns": ["city", "country"], "notes": "..."}\n'
+    "  ]\n"
+    "}\n"
+    "Rules:\n"
+    "- Every column must appear in exactly one group.\n"
+    "- Use short, descriptive group_name values.\n"
+    "- Groups can be singletons.\n"
+    "Columns:\n"
+    f"{json.dumps(columns, ensure_ascii=False)}\n"
+    "Sample rows (first few rows):\n"
+    f"{json.dumps(sample_rows, ensure_ascii=False, indent=2)}\n"
+  )
+
+
+def build_group_prompt(group_name: str, contexts: List[Dict[str, Any]]) -> str:
+  return (
+    "You are a data cleaning assistant. For this group of related columns, propose mappings.\n"
+    "Return ONLY valid JSON with this schema:\n"
+    "{\n"
+    '  "group_name": "group",\n'
+    '  "columns": [\n'
+    "    {\n"
+    '      "column": "RAW COLUMN",\n'
+    '      "normalized_column": "column_clean",\n'
+    '      "action": "map_values | parse_numeric | split_list | consolidate | skip",\n'
+    '      "value_map": [{"raw": "...", "normalized": "...", "confidence": 0.91}],\n'
+    '      "list_delimiters": [",", ";"],\n'
+    '      "notes": "...",\n'
+    '      "confidence": 0.83\n'
+    "    }\n"
+    "  ],\n"
+    '  "consolidations": [\n'
+    "    {\n"
+    '      "target_column": "canonical_name",\n'
+    '      "source_columns": ["COL A", "COL B"],\n'
+    '      "method": "first_non_empty | merge_list | numeric_merge",\n'
+    '      "notes": "...",\n'
+    '      "confidence": 0.8\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    "Rules:\n"
+    "- One entry per input column in columns[].\n"
+    "- If action is map_values, include EVERY distinct raw value in value_map.\n"
+    "- If action is parse_numeric, normalized_column should be numeric (e.g. *_eur or *_num).\n"
+    "- If action is split_list, include list_delimiters you expect.\n"
+    "- Use snake_case for normalized_column.\n"
+    "- Prefer skip for free-text fields.\n"
+    "- If no consolidations, return an empty list [].\n"
+    f"Group name: {group_name}\n"
+    "Context JSON:\n"
+    f"{json.dumps(contexts, ensure_ascii=False, indent=2)}\n"
   )
 
 
@@ -169,6 +232,30 @@ def extract_distinct_values(series: pd.Series) -> List[str]:
   return values
 
 
+def normalize_group_assignments(columns: List[str], groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+  seen = set()
+  normalized: List[Dict[str, Any]] = []
+  for group in groups:
+    if not isinstance(group, dict):
+      continue
+    group_cols = [col for col in group.get("columns", []) if isinstance(col, str)]
+    group_cols = [col for col in group_cols if col in columns]
+    group_cols = [col for col in group_cols if col not in seen]
+    if not group_cols:
+      continue
+    for col in group_cols:
+      seen.add(col)
+    normalized.append({
+      "group_name": group.get("group_name") or "group",
+      "columns": group_cols,
+      "notes": group.get("notes") or ""
+    })
+  missing = [col for col in columns if col not in seen]
+  for col in missing:
+    normalized.append({"group_name": "singleton", "columns": [col], "notes": ""})
+  return normalized
+
+
 def build_value_map(entries: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
   mapping: Dict[str, Dict[str, Any]] = {}
   for entry in entries:
@@ -236,36 +323,70 @@ def main() -> None:
 
   ai_client = build_client()
 
-  column_summaries: List[Dict[str, Any]] = []
   usage_totals: Dict[str, int] = {}
-  for idx, column in enumerate(df.columns, start=1):
-    log(f"[column {idx}/{len(df.columns)}] start {column}")
-    series = df[column]
-    total_rows = len(series)
-    missing_count = sum(1 for value in series.tolist() if is_missing_value(value))
-    distinct_values = extract_distinct_values(series)
-    _, numeric_failures = parse_numeric_series(distinct_values)
-    numeric_failure_rate = numeric_failures / max(len(distinct_values), 1)
-    list_delimiters = detect_list_delimiters(distinct_values)
-    detected_type = detect_column_type(distinct_values, numeric_failure_rate, list_delimiters)
+  usage_lock = threading.Lock()
+  consolidations: List[Dict[str, Any]] = []
+  consolidation_lock = threading.Lock()
 
-    context = {
-      "version_id": version_id,
-      "column": column,
-      "row_count": total_rows,
-      "missing_pct": missing_count / max(total_rows, 1),
-      "unique_count": len(distinct_values),
-      "detected_type": detected_type,
-      "list_delimiters": list_delimiters,
-      "examples": distinct_values[:8],
-      "distinct_values": distinct_values
-    }
+  sample_rows = df.head(GROUP_SAMPLE_ROWS).to_dict(orient="records")
+  columns = [str(col) for col in df.columns]
+  grouping_prompt = build_grouping_prompt(columns, sample_rows)
+  grouping_prompt_hash = sha256_text(grouping_prompt)
+  log("[grouping] start")
+  try:
+    grouping_response = generate_with_timeout(ai_client, args.model, grouping_prompt)
+    usage = extract_usage(grouping_response)
+    if usage:
+      log(f"[grouping] usage={usage}")
+      for key, value in usage.items():
+        usage_totals[key] = usage_totals.get(key, 0) + int(value)
+    grouping_output = safe_json_loads(grouping_response.text or "")
+    groups = normalize_group_assignments(columns, grouping_output.get("groups", []))
+  except Exception as exc:
+    log(f"[grouping] error: {exc}")
+    groups = [{"group_name": "singleton", "columns": [col], "notes": ""} for col in columns]
 
-    base_prompt = build_prompt(context)
-    input_hash = sha256_text(json.dumps(distinct_values, ensure_ascii=False, separators=(",", ":")))
+  def process_group(group: Dict[str, Any]) -> None:
+    group_name = group.get("group_name") or "group"
+    group_columns = group.get("columns", [])
+    log(f"[group {group_name}] start columns={len(group_columns)}")
+    group_s3_client = build_s3_client()
 
-    output: Dict[str, Any]
+    contexts: List[Dict[str, Any]] = []
+    per_column_stats: Dict[str, Dict[str, Any]] = {}
+    for column in group_columns:
+      series = df[column]
+      total_rows = len(series)
+      missing_count = sum(1 for value in series.tolist() if is_missing_value(value))
+      distinct_values = extract_distinct_values(series)
+      _, numeric_failures = parse_numeric_series(distinct_values)
+      numeric_failure_rate = numeric_failures / max(len(distinct_values), 1)
+      list_delimiters = detect_list_delimiters(distinct_values)
+      detected_type = detect_column_type(distinct_values, numeric_failure_rate, list_delimiters)
+      context = {
+        "version_id": version_id,
+        "column": column,
+        "row_count": total_rows,
+        "missing_pct": missing_count / max(total_rows, 1),
+        "unique_count": len(distinct_values),
+        "detected_type": detected_type,
+        "list_delimiters": list_delimiters,
+        "examples": distinct_values[:8],
+        "distinct_values": distinct_values
+      }
+      contexts.append(context)
+      per_column_stats[column] = {
+        "distinct_values": distinct_values,
+        "missing_count": missing_count,
+        "total_rows": total_rows,
+        "list_delimiters": list_delimiters,
+        "detected_type": detected_type,
+        "input_hash": sha256_text(json.dumps(distinct_values, ensure_ascii=False, separators=(",", ":")))
+      }
+
+    base_prompt = build_group_prompt(group_name, contexts)
     prompt_hash = ""
+    output: Dict[str, Any] = {}
     last_error: Optional[str] = None
     for attempt in range(MAX_MODEL_ATTEMPTS):
       prompt = base_prompt
@@ -273,128 +394,132 @@ def main() -> None:
         prompt = build_retry_prompt(base_prompt, last_error)
       prompt_hash = sha256_text(prompt)
       try:
-        log(f"[column {column}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
+        log(f"[group {group_name}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
         response = generate_with_timeout(ai_client, args.model, prompt)
         usage = extract_usage(response)
         if usage:
-          log(f"[column {column}] usage={usage}")
-          for key, value in usage.items():
-            usage_totals[key] = usage_totals.get(key, 0) + int(value)
+          log(f"[group {group_name}] usage={usage}")
+          with usage_lock:
+            for key, value in usage.items():
+              usage_totals[key] = usage_totals.get(key, 0) + int(value)
         output = safe_json_loads(response.text or "")
         if not isinstance(output, dict):
           raise ValueError("expected JSON object")
-        action = output.get("action")
-        if action not in ALLOWED_ACTIONS:
-          raise ValueError(f"invalid action '{action}'")
-        log(f"[column {column}] action={action}")
+        if not isinstance(output.get("columns"), list):
+          raise ValueError("missing columns list")
         break
       except TimeoutError:
         last_error = f"timeout after {MODEL_TIMEOUT_SECONDS}s"
-        output = {}
-        log(f"[column {column}] timeout: {last_error}")
+        log(f"[group {group_name}] timeout: {last_error}")
         if attempt == MAX_MODEL_ATTEMPTS - 1:
-          output = fallback_skip_output(column, last_error)
+          output = {}
       except Exception as exc:
         last_error = str(exc)
-        output = {}
-        log(f"[column {column}] error: {last_error}")
+        log(f"[group {group_name}] error: {last_error}")
         if attempt == MAX_MODEL_ATTEMPTS - 1:
-          output = fallback_skip_output(column, last_error)
-    else:
-      output = fallback_skip_output(column, "invalid model response")
-      prompt_hash = sha256_text(base_prompt)
-      action = output.get("action")
+          output = {}
 
-    action = output.get("action")
-    normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
-    value_map = output.get("value_map", [])
-    if not isinstance(value_map, list):
-      output = fallback_skip_output(column, "invalid value_map")
-      action = output.get("action")
-      normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
-      value_map = []
-    mapping = build_value_map(value_map)
-    list_delimiters = output.get("list_delimiters") or list_delimiters
-    if not isinstance(list_delimiters, list):
-      list_delimiters = []
+    output_columns = output.get("columns", []) if isinstance(output, dict) else []
+    columns_by_name = {
+      entry.get("column"): entry
+      for entry in output_columns
+      if isinstance(entry, dict)
+    }
 
-    rows: List[Dict[str, Any]] = []
-    if action == "map_values":
-      missing_values = [raw_value for raw_value in distinct_values if raw_value not in mapping]
-      if missing_values:
-        output = fallback_skip_output(column, "incomplete value_map")
-        action = output.get("action")
-        normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
+    group_consolidations = output.get("consolidations", []) if isinstance(output, dict) else []
+    if isinstance(group_consolidations, list):
+      with consolidation_lock:
+        for item in group_consolidations:
+          if isinstance(item, dict):
+            consolidations.append(item)
+
+    for column in group_columns:
+      stats = per_column_stats[column]
+      distinct_values = stats["distinct_values"]
+      list_delimiters = stats["list_delimiters"]
+      detected_type = stats["detected_type"]
+      total_rows = stats["total_rows"]
+      missing_count = stats["missing_count"]
+      input_hash = stats["input_hash"]
+
+      output_entry = columns_by_name.get(column)
+      if not isinstance(output_entry, dict):
+        output_entry = fallback_skip_output(column, "missing output for column")
+
+      action = output_entry.get("action")
+      if action not in ALLOWED_ACTIONS:
+        output_entry = fallback_skip_output(column, "invalid action")
+        action = output_entry.get("action")
+
+      normalized_column = output_entry.get("normalized_column") or default_normalized_column(column, action)
+      value_map = output_entry.get("value_map", [])
+      if not isinstance(value_map, list):
+        output_entry = fallback_skip_output(column, "invalid value_map")
+        action = output_entry.get("action")
+        normalized_column = output_entry.get("normalized_column") or default_normalized_column(column, action)
         value_map = []
-        mapping = {}
+      mapping = build_value_map(value_map)
+      list_delimiters = output_entry.get("list_delimiters") or list_delimiters
+      if not isinstance(list_delimiters, list):
+        list_delimiters = []
+
+      rows: List[Dict[str, Any]] = []
+      if action == "map_values":
+        missing_values = [raw_value for raw_value in distinct_values if raw_value not in mapping]
+        if missing_values:
+          output_entry = fallback_skip_output(column, "incomplete value_map")
+          action = output_entry.get("action")
+          normalized_column = output_entry.get("normalized_column") or default_normalized_column(column, action)
+          value_map = []
+          mapping = {}
+        else:
+          for raw_value in distinct_values:
+            entry = mapping[raw_value]
+            rows.append({
+              "raw_value": raw_value,
+              "normalized_value": entry.get("normalized") or "",
+              "confidence": entry.get("confidence") or "",
+              "approved": 0,
+              "notes": ""
+            })
       else:
         for raw_value in distinct_values:
-          entry = mapping[raw_value]
           rows.append({
             "raw_value": raw_value,
-            "normalized_value": entry.get("normalized") or "",
-            "confidence": entry.get("confidence") or "",
+            "normalized_value": "",
+            "confidence": "",
             "approved": 0,
             "notes": ""
           })
-    else:
-      for raw_value in distinct_values:
-        rows.append({
-          "raw_value": raw_value,
-          "normalized_value": "",
-          "confidence": "",
-          "approved": 0,
-          "notes": ""
-        })
 
-    csv_df = pd.DataFrame(rows, columns=["raw_value", "normalized_value", "confidence", "approved", "notes"])
-    csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
-    csv_key = f"{output_prefix}/{column}.csv"
-    upload_bytes(s3_client, bucket, csv_key, csv_bytes, "text/csv")
+      csv_df = pd.DataFrame(rows, columns=["raw_value", "normalized_value", "confidence", "approved", "notes"])
+      csv_bytes = csv_df.to_csv(index=False).encode("utf-8")
+      csv_key = f"{output_prefix}/{column}.csv"
+      upload_bytes(group_s3_client, bucket, csv_key, csv_bytes, "text/csv")
 
-    manifest = {
-      "column": column,
-      "normalized_column": normalized_column,
-      "action": action,
-      "confidence": output.get("confidence"),
-      "notes": output.get("notes"),
-      "model_id": args.model,
-      "prompt_hash": prompt_hash,
-      "input_hash": input_hash,
-      "unique_count": len(distinct_values),
-      "missing_pct": missing_count / max(total_rows, 1),
-      "list_delimiters": list_delimiters,
-      "value_map_count": len(value_map),
-      "proposal_csv_path": csv_key,
-      "generated_at": now_iso()
-    }
-    manifest_key = f"{output_prefix}/{column}.manifest.json"
-    upload_bytes(s3_client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
+      manifest = {
+        "column": column,
+        "normalized_column": normalized_column,
+        "action": action,
+        "confidence": output_entry.get("confidence"),
+        "notes": output_entry.get("notes"),
+        "model_id": args.model,
+        "prompt_hash": prompt_hash,
+        "input_hash": input_hash,
+        "unique_count": len(distinct_values),
+        "missing_pct": missing_count / max(total_rows, 1),
+        "list_delimiters": list_delimiters,
+        "value_map_count": len(value_map),
+        "proposal_csv_path": csv_key,
+        "generated_at": now_iso(),
+        "group_name": group_name,
+        "detected_type": detected_type
+      }
+      manifest_key = f"{output_prefix}/{column}.manifest.json"
+      upload_bytes(group_s3_client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
 
-    column_summaries.append({
-      "column": column,
-      "detected_type": detected_type,
-      "unique_count": len(distinct_values),
-      "examples": distinct_values[:5]
-    })
-
-  consolidation_prompt = build_consolidation_prompt(column_summaries)
-  consolidation_prompt_hash = sha256_text(consolidation_prompt)
-  consolidation_input_hash = sha256_text(json.dumps(column_summaries, ensure_ascii=False, separators=(",", ":")))
-  log("[consolidations] start")
-  try:
-    consolidation_response = generate_with_timeout(ai_client, args.model, consolidation_prompt)
-    usage = extract_usage(consolidation_response)
-    if usage:
-      log(f"[consolidations] usage={usage}")
-      for key, value in usage.items():
-        usage_totals[key] = usage_totals.get(key, 0) + int(value)
-    consolidations = safe_json_loads(consolidation_response.text or "")
-    if not isinstance(consolidations, list):
-      raise ValueError("expected JSON list")
-  except Exception as exc:
-    log(f"[consolidations] error: {exc}")
-    consolidations = []
+  with ThreadPoolExecutor(max_workers=len(groups) or 1) as executor:
+    list(executor.map(process_group, groups))
 
   consolidations_key = f"{output_prefix}/consolidations.json"
   upload_bytes(
@@ -406,8 +531,8 @@ def main() -> None:
   )
   consolidations_manifest = {
     "model_id": args.model,
-    "prompt_hash": consolidation_prompt_hash,
-    "input_hash": consolidation_input_hash,
+    "prompt_hash": grouping_prompt_hash,
+    "input_hash": sha256_text(json.dumps(groups, ensure_ascii=False, separators=(",", ":"))),
     "generated_at": now_iso(),
     "consolidations_path": consolidations_key,
     "count": len(consolidations)
