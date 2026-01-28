@@ -9,6 +9,7 @@ def main() -> None:
   parser.add_argument("--source", required=True)
   args = parser.parse_args()
 
+  print(f"[enrichment] start version_id={args.version_id} source={args.source}", flush=True)
   payload = {
     "version_id": args.version_id,
     "source": args.source,
@@ -16,6 +17,7 @@ def main() -> None:
     "started_at": datetime.utcnow().isoformat() + "Z"
   }
   print(json.dumps(payload, indent=2))
+  print("[enrichment] done", flush=True)
 
 
 if __name__ == "__main__":

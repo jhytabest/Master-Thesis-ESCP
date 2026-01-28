@@ -314,6 +314,7 @@ def main() -> None:
   version_id = args.version_id
   output_prefix = args.output_prefix or f"mappings/proposals/{version_id}"
   output_prefix = output_prefix.rstrip("/")
+  log(f"[start] version_id={version_id} output_prefix={output_prefix} model={args.model}")
 
   bucket = env_or_error("R2_BUCKET")
   s3_client = build_s3_client()
@@ -321,6 +322,7 @@ def main() -> None:
   source_key = f"raw/{version_id}/dataset.csv"
   raw_bytes = download_bytes(s3_client, bucket, source_key)
   df = pd.read_csv(io.BytesIO(raw_bytes), dtype=str, keep_default_na=False)
+  log(f"[dataset] rows={len(df)} columns={len(df.columns)}")
 
   ai_client = build_client()
 
@@ -333,6 +335,7 @@ def main() -> None:
   columns = [str(col) for col in df.columns]
   grouping_prompt = build_grouping_prompt(columns, sample_rows)
   grouping_prompt_hash = sha256_text(grouping_prompt)
+  log(f"[grouping] prompt_chars={len(grouping_prompt)} sample_rows={len(sample_rows)}")
   log("[grouping] start")
   try:
     grouping_response = generate_with_timeout(ai_client, args.model, grouping_prompt)
@@ -355,6 +358,7 @@ def main() -> None:
     group_columns = group.get("columns", [])
     log(f"[group {group_name}] start columns={len(group_columns)}")
     group_s3_client = build_s3_client()
+    group_start = now_iso()
 
     contexts: List[Dict[str, Any]] = []
     per_column_stats: Dict[str, Dict[str, Any]] = {}
@@ -521,6 +525,9 @@ def main() -> None:
       }
       manifest_key = f"{output_prefix}/{column}.manifest.json"
       upload_bytes(group_s3_client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
+      log(f"[group {group_name}] wrote column={column} action={action} rows={len(rows)}")
+
+    log(f"[group {group_name}] done started_at={group_start} finished_at={now_iso()}")
 
   max_workers = min(max(len(groups), 1), MAX_GROUP_WORKERS)
   log(f"[grouping] max_workers={max_workers}")
@@ -551,6 +558,7 @@ def main() -> None:
     json.dumps(consolidations_manifest, indent=2).encode("utf-8"),
     "application/json"
   )
+  log(f"[consolidations] saved count={len(consolidations)}")
 
   if usage_totals:
     log(f"[usage totals] {usage_totals}")
@@ -562,6 +570,7 @@ def main() -> None:
     "generated_at": now_iso(),
     "usage_totals": usage_totals
   }, indent=2))
+  log("[done] proposal job completed")
 
 
 if __name__ == "__main__":

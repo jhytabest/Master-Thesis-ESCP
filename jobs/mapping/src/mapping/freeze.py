@@ -21,6 +21,10 @@ from mapping.utils import (
 )
 
 
+def log(message: str) -> None:
+  print(f"[mapping.freeze] {message}", flush=True)
+
+
 def parse_approved_flag(value: Any) -> bool:
   if value is None:
     return False
@@ -31,11 +35,13 @@ def parse_approved_flag(value: Any) -> bool:
 
 
 def load_csv_from_r2(client: boto3.client, bucket: str, key: str) -> pd.DataFrame:
+  log(f"load_csv_from_r2 key={key}")
   raw = download_bytes(client, bucket, key)
   return pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False)
 
 
 def load_manifest_bytes(client: boto3.client, bucket: str, key: str) -> Tuple[Dict[str, Any], bytes]:
+  log(f"load_manifest_bytes key={key}")
   raw = download_bytes(client, bucket, key)
   return json.loads(raw.decode("utf-8")), raw
 
@@ -49,8 +55,10 @@ def resolve_proposal_keys(
   if proposal_prefix:
     prefix = proposal_prefix.rstrip("/") + "/"
     keys = [key for key in list_keys(client, bucket, prefix) if key.endswith(".csv")]
+    log(f"resolve_proposal_keys prefix={prefix} count={len(keys)}")
     return keys, prefix.rstrip("/")
   if proposal_path:
+    log(f"resolve_proposal_keys path={proposal_path}")
     return [proposal_path], os.path.dirname(proposal_path)
   raise RuntimeError("Provide --proposal_path or --proposal_prefix")
 
@@ -59,6 +67,7 @@ def register_mapping_bundle(payload: Dict[str, Any]) -> None:
   base = os.getenv("WORKER_API_BASE")
   token = os.getenv("WORKER_API_TOKEN")
   if not base or not token:
+    log("register_mapping_bundle skipped (missing WORKER_API_BASE or WORKER_API_TOKEN)")
     return
   url = f"{base}/mapping_bundles/register"
   data = json.dumps(payload).encode("utf-8")
@@ -73,6 +82,7 @@ def register_mapping_bundle(payload: Dict[str, Any]) -> None:
   try:
     with urlrequest.urlopen(req, timeout=30) as resp:
       _ = resp.read()
+    log("register_mapping_bundle completed")
   except urlerror.HTTPError as exc:
     details = exc.read().decode("utf-8", errors="ignore")
     raise RuntimeError(f"Failed to register mapping bundle: {exc.code} {details}") from exc
@@ -92,6 +102,7 @@ def main() -> None:
 
   bucket = env_or_error("R2_BUCKET")
   client = build_s3_client()
+  log(f"start output_bundle_id={args.output_bundle_id} proposal_path={args.proposal_path} proposal_prefix={args.proposal_prefix}")
 
   proposal_keys, resolved_prefix = resolve_proposal_keys(
     client, bucket, args.proposal_path, args.proposal_prefix
@@ -102,6 +113,7 @@ def main() -> None:
   output_prefix = args.output_prefix or f"mappings/{args.output_bundle_id}"
   output_prefix = output_prefix.rstrip("/")
   approved_at = args.approved_at or now_iso()
+  log(f"output_prefix={output_prefix} approved_at={approved_at}")
 
   columns_manifest: List[Dict[str, Any]] = []
   source_version_id: Optional[str] = None
@@ -118,6 +130,7 @@ def main() -> None:
     proposal_manifest_hash = sha256_hex(manifest_bytes)
     if not source_version_id:
       source_version_id = manifest.get("version_id")
+    log(f"processing column={column_name} csv_key={csv_key}")
 
     action = manifest.get("action")
     if not action:
@@ -131,6 +144,7 @@ def main() -> None:
 
     df["approved_flag"] = df["approved"].apply(parse_approved_flag)
     approved_rows = df[df["approved_flag"]].copy()
+    log(f"approved rows={len(approved_rows)} total rows={len(df)} action={action}")
 
     approved_rows["raw_value"] = approved_rows["raw_value"].apply(normalize_raw_value)
     approved_rows["normalized_value"] = approved_rows["normalized_value"].apply(normalize_raw_value)
@@ -168,6 +182,7 @@ def main() -> None:
       )
       mapping_path = f"{output_prefix}/{filename}"
       upload_bytes(client, bucket, mapping_path, mapping_bytes, "text/csv")
+      log(f"wrote mapping_path={mapping_path} rows={len(mapping_df)}")
       approved_csv_hash = sha256_hex(mapping_bytes)
 
     columns_manifest.append({
@@ -220,6 +235,7 @@ def main() -> None:
   manifest_key = f"{output_prefix}/bundle_manifest.json"
   upload_bytes(client, bucket, manifest_key, manifest_bytes, "application/json")
   manifest_hash = sha256_hex(manifest_bytes)
+  log(f"wrote bundle_manifest={manifest_key}")
 
   register_mapping_bundle({
     "mapping_bundle_id": args.output_bundle_id,
@@ -237,6 +253,7 @@ def main() -> None:
     "bundle_manifest_sha256": manifest_hash,
     "columns": len(columns_manifest)
   }, indent=2))
+  log("done")
 
 
 if __name__ == "__main__":

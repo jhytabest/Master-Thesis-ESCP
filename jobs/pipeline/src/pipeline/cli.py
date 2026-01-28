@@ -33,6 +33,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
+def log(message: str) -> None:
+  print(f"[pipeline] {message}", flush=True)
+
+
 DEFAULT_FEATURE_LIST = [
   "company_status_clean",
   "target_total_funding_eur",
@@ -183,7 +187,9 @@ def load_mapping_bundle(
   mapping_bundle_id: str
 ) -> Tuple[Dict[str, Any], str]:
   manifest_key = f"mappings/{mapping_bundle_id}/bundle_manifest.json"
+  log(f"load_mapping_bundle key={manifest_key}")
   raw = download_bytes(client, bucket, manifest_key)
+  log(f"load_mapping_bundle bytes={len(raw)}")
   return json.loads(raw.decode("utf-8")), sha256_hex(raw)
 
 
@@ -206,10 +212,12 @@ def apply_mapping_bundle(
       continue
     action = column_spec.get("action")
     normalized_column = column_spec.get("normalized_column") or normalize_header(raw_column)
+    log(f"apply_mapping_bundle column={raw_column} action={action} normalized={normalized_column}")
     if action == "map_values":
       mapping_path = column_spec.get("mapping_path")
       if not mapping_path:
         raise RuntimeError(f"Missing mapping_path for column {raw_column}")
+      log(f"apply_mapping_bundle loading mapping_path={mapping_path}")
       mapping_bytes = download_bytes(client, bucket, mapping_path)
       mapping_df = pd.read_csv(io.BytesIO(mapping_bytes), dtype=str, keep_default_na=False)
       if not {"raw_value", "normalized_value"}.issubset(mapping_df.columns):
@@ -235,10 +243,12 @@ def apply_mapping_bundle(
       df[normalized_column] = df[raw_column].apply(map_value)
       if unmapped:
         mapping_stats["mapping_unmapped_values"] += int(unmapped)
+        log(f"apply_mapping_bundle unmapped={unmapped} column={raw_column}")
     elif action == "parse_numeric":
       parsed, failures = parse_numeric_series(df[raw_column])
       df[normalized_column] = pd.Series(parsed, index=df.index, dtype="float")
       mapping_stats["numeric_parse_columns"] += 1
+      log(f"apply_mapping_bundle parse_numeric failures={failures} column={raw_column}")
       if failures:
         mapping_stats.setdefault("numeric_parse_failures", 0)
         mapping_stats["numeric_parse_failures"] += int(failures)
@@ -246,6 +256,7 @@ def apply_mapping_bundle(
       delimiters = column_spec.get("list_delimiters") or []
       df[normalized_column] = df[raw_column].apply(lambda value: split_list_value(value, delimiters))
       mapping_stats["list_parse_columns"] += 1
+      log(f"apply_mapping_bundle split_list delimiters={delimiters} column={raw_column}")
     elif action in {"skip", "consolidate"}:
       continue
     else:
@@ -253,6 +264,7 @@ def apply_mapping_bundle(
 
   consolidations_path = bundle_manifest.get("consolidations_path")
   if consolidations_path:
+    log(f"apply_mapping_bundle consolidations_path={consolidations_path}")
     consolidations_bytes = download_bytes(client, bucket, consolidations_path)
     consolidations = json.loads(consolidations_bytes.decode("utf-8"))
     for rule in consolidations or []:
@@ -298,6 +310,7 @@ def apply_mapping_bundle(
           return None
         df[target] = df.apply(merge_numeric, axis=1)
       mapping_stats["consolidation_columns"] += 1
+      log(f"apply_mapping_bundle consolidation target={target} method={method} sources={sources}")
 
   if mapping_stats.get("mapping_unmapped_values", 0) > 0:
     raise RuntimeError("Mapping bundle missing values for some raw entries")
@@ -770,6 +783,7 @@ def main() -> None:
   if not version_id:
     raise RuntimeError("Missing required version_id")
   started_at = now_iso()
+  log(f"start version_id={version_id} run_id={run_id} mapping_bundle_id={mapping_bundle_id}")
   if run_id:
     update_run(run_id, {"status": "STARTED", "started_at": started_at})
 
@@ -783,12 +797,14 @@ def main() -> None:
     dataset_sha = sha256_hex(raw_bytes)
 
     df = pd.read_csv(io.BytesIO(raw_bytes))
+    log(f"dataset loaded rows={len(df)} columns={len(df.columns)} sha={dataset_sha}")
     missing = df.isna().sum().to_dict()
     mapping_manifest_hash = None
     mapping_stats: Dict[str, Any] = {}
     if mapping_bundle_id:
       bundle_manifest, mapping_manifest_hash = load_mapping_bundle(client, bucket, mapping_bundle_id)
       df, mapping_stats = apply_mapping_bundle(df, client, bucket, bundle_manifest)
+      log(f"mapping applied stats={mapping_stats}")
 
     quality = {
       "row_count": int(len(df)),
@@ -800,6 +816,7 @@ def main() -> None:
     df.to_parquet(cohort_buffer, index=False)
     cohort_key = f"derived/{version_id}/cohort.parquet"
     upload_bytes(client, bucket, cohort_key, cohort_buffer.getvalue(), "application/octet-stream")
+    log(f"wrote cohort_parquet={cohort_key}")
 
     features_df, parsing_stats, meta_cols = build_feature_frame(df)
     if mapping_stats:
@@ -808,13 +825,16 @@ def main() -> None:
     features_df.to_parquet(features_buffer, index=False)
     features_key = f"derived/{version_id}/features.parquet"
     upload_bytes(client, bucket, features_key, features_buffer.getvalue(), "application/octet-stream")
+    log(f"wrote features_parquet={features_key} rows={len(features_df)} columns={len(features_df.columns)}")
 
     eda_html = build_eda_html(df, quality["missing_by_column"])
     eda_key = f"reports/{version_id}/eda.html"
     upload_bytes(client, bucket, eda_key, eda_html.encode("utf-8"), "text/html")
+    log(f"wrote eda_html={eda_key}")
 
     quality_key = f"reports/{version_id}/data_quality.json"
     upload_bytes(client, bucket, quality_key, json.dumps(quality, indent=2).encode("utf-8"), "application/json")
+    log(f"wrote data_quality_json={quality_key}")
 
     model_outputs = train_baseline_models(
       features_df=features_df,
@@ -822,6 +842,7 @@ def main() -> None:
       dataset_sha=dataset_sha,
       meta_cols=meta_cols
     )
+    log(f"training complete models={len(model_outputs)}")
 
     models_index: List[Dict[str, Any]] = []
     for output in model_outputs:
@@ -829,12 +850,14 @@ def main() -> None:
       metrics = output.get("metrics", {})
       metrics_key = f"models/{version_id}/{model_id}/metrics.json"
       upload_bytes(client, bucket, metrics_key, json.dumps(metrics, indent=2).encode("utf-8"), "application/json")
+      log(f"wrote metrics={metrics_key}")
 
       model_key = None
       predictions_key = None
       if output.get("status") == "TRAINED":
         model_key = f"models/{version_id}/{model_id}/model.bin"
         upload_bytes(client, bucket, model_key, output["model_bytes"], "application/octet-stream")
+        log(f"wrote model={model_key}")
 
         predictions_df = output.get("predictions")
         if predictions_df is not None:
@@ -842,6 +865,7 @@ def main() -> None:
           predictions_df.to_parquet(pred_buffer, index=False)
           predictions_key = f"predictions/{version_id}/{model_id}/scores.parquet"
           upload_bytes(client, bucket, predictions_key, pred_buffer.getvalue(), "application/octet-stream")
+          log(f"wrote predictions={predictions_key}")
 
       models_index.append({
         "model_id": model_id,
@@ -865,6 +889,7 @@ def main() -> None:
     }
     manifest_key = f"manifests/{version_id}/cleaning_manifest.json"
     upload_bytes(client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
+    log(f"wrote cleaning_manifest={manifest_key}")
 
     index = {
       "version_id": version_id,
@@ -881,6 +906,7 @@ def main() -> None:
     }
     index_key = f"reports/{version_id}/index.json"
     upload_bytes(client, bucket, index_key, json.dumps(index, indent=2).encode("utf-8"), "application/json")
+    log(f"wrote artifact_index={index_key}")
 
     if run_id:
       update_run(run_id, {

@@ -9,6 +9,10 @@ import boto3
 import pandas as pd
 
 
+def log(message: str) -> None:
+  print(f"[mapping.utils] {message}", flush=True)
+
+
 def env_or_error(name: str) -> str:
   value = os.getenv(name)
   if not value:
@@ -51,6 +55,7 @@ def build_s3_client() -> boto3.client:
   endpoint = env_or_error("R2_ENDPOINT")
   access_key = env_or_error("R2_ACCESS_KEY_ID")
   secret_key = env_or_error("R2_SECRET_ACCESS_KEY")
+  log(f"build_s3_client endpoint={endpoint}")
   return boto3.client(
     "s3",
     endpoint_url=endpoint,
@@ -61,17 +66,23 @@ def build_s3_client() -> boto3.client:
 
 
 def download_bytes(client: boto3.client, bucket: str, key: str) -> bytes:
+  log(f"download_bytes bucket={bucket} key={key}")
   obj = client.get_object(Bucket=bucket, Key=key)
-  return obj["Body"].read()
+  data = obj["Body"].read()
+  log(f"download_bytes completed size={len(data)}")
+  return data
 
 
 def upload_bytes(client: boto3.client, bucket: str, key: str, data: bytes, content_type: str) -> None:
+  log(f"upload_bytes bucket={bucket} key={key} bytes={len(data)} content_type={content_type}")
   client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+  log("upload_bytes completed")
 
 
 def list_keys(client: boto3.client, bucket: str, prefix: str) -> List[str]:
   keys: List[str] = []
   token: Optional[str] = None
+  log(f"list_keys bucket={bucket} prefix={prefix}")
   while True:
     params: Dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
     if token:
@@ -84,6 +95,7 @@ def list_keys(client: boto3.client, bucket: str, prefix: str) -> List[str]:
     if not resp.get("IsTruncated"):
       break
     token = resp.get("NextContinuationToken")
+  log(f"list_keys completed count={len(keys)}")
   return keys
 
 
