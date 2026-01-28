@@ -95,8 +95,28 @@ def log(message: str) -> None:
   print(message, file=sys.stdout, flush=True)
 
 
-def generate_with_timeout(client: genai.Client, model_name: str, prompt: str) -> str:
-  def _call() -> str:
+def extract_usage(response: genai_types.GenerateContentResponse) -> Dict[str, int]:
+  usage = getattr(response, "usage_metadata", None)
+  if usage is None:
+    return {}
+  data: Dict[str, int] = {}
+  for key in ("prompt_token_count", "candidates_token_count", "total_token_count"):
+    value = getattr(usage, key, None)
+    if value is not None:
+      data[key] = value
+  for alt_key, key in (
+    ("prompt_tokens", "prompt_token_count"),
+    ("candidate_tokens", "candidates_token_count"),
+    ("total_tokens", "total_token_count"),
+  ):
+    value = getattr(usage, alt_key, None)
+    if value is not None and key not in data:
+      data[key] = value
+  return data
+
+
+def generate_with_timeout(client: genai.Client, model_name: str, prompt: str) -> genai_types.GenerateContentResponse:
+  def _call() -> genai_types.GenerateContentResponse:
     response = client.models.generate_content(
       model=model_name,
       contents=prompt,
@@ -106,7 +126,7 @@ def generate_with_timeout(client: genai.Client, model_name: str, prompt: str) ->
         response_mime_type="application/json"
       )
     )
-    return response.text or ""
+    return response
 
   with ThreadPoolExecutor(max_workers=1) as executor:
     future = executor.submit(_call)
@@ -217,6 +237,7 @@ def main() -> None:
   ai_client = build_client()
 
   column_summaries: List[Dict[str, Any]] = []
+  usage_totals: Dict[str, int] = {}
   for idx, column in enumerate(df.columns, start=1):
     log(f"[column {idx}/{len(df.columns)}] start {column}")
     series = df[column]
@@ -253,7 +274,13 @@ def main() -> None:
       prompt_hash = sha256_text(prompt)
       try:
         log(f"[column {column}] attempt {attempt + 1}/{MAX_MODEL_ATTEMPTS}")
-        output = safe_json_loads(generate_with_timeout(ai_client, args.model, prompt))
+        response = generate_with_timeout(ai_client, args.model, prompt)
+        usage = extract_usage(response)
+        if usage:
+          log(f"[column {column}] usage={usage}")
+          for key, value in usage.items():
+            usage_totals[key] = usage_totals.get(key, 0) + int(value)
+        output = safe_json_loads(response.text or "")
         if not isinstance(output, dict):
           raise ValueError("expected JSON object")
         action = output.get("action")
@@ -356,7 +383,13 @@ def main() -> None:
   consolidation_input_hash = sha256_text(json.dumps(column_summaries, ensure_ascii=False, separators=(",", ":")))
   log("[consolidations] start")
   try:
-    consolidations = safe_json_loads(generate_with_timeout(ai_client, args.model, consolidation_prompt))
+    consolidation_response = generate_with_timeout(ai_client, args.model, consolidation_prompt)
+    usage = extract_usage(consolidation_response)
+    if usage:
+      log(f"[consolidations] usage={usage}")
+      for key, value in usage.items():
+        usage_totals[key] = usage_totals.get(key, 0) + int(value)
+    consolidations = safe_json_loads(consolidation_response.text or "")
     if not isinstance(consolidations, list):
       raise ValueError("expected JSON list")
   except Exception as exc:
@@ -388,11 +421,15 @@ def main() -> None:
     "application/json"
   )
 
+  if usage_totals:
+    log(f"[usage totals] {usage_totals}")
+
   print(json.dumps({
     "version_id": version_id,
     "output_prefix": output_prefix,
     "columns": len(df.columns),
-    "generated_at": now_iso()
+    "generated_at": now_iso(),
+    "usage_totals": usage_totals
   }, indent=2))
 
 

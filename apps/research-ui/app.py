@@ -223,6 +223,25 @@ def list_versions() -> List[Dict[str, Any]]:
   return payload.get("versions", [])
 
 
+def register_version_upload(file_bytes: bytes, filename: str, version_id: Optional[str]) -> Dict[str, Any]:
+  if not WORKER_API_BASE:
+    raise RuntimeError("WORKER_API_BASE not configured")
+  files = {"file": (filename, file_bytes, "text/csv")}
+  data: Dict[str, Any] = {}
+  if version_id:
+    data["version_id"] = version_id
+  resp = requests.post(
+    f"{WORKER_API_BASE}/versions/register",
+    headers=worker_headers(),
+    files=files,
+    data=data,
+    timeout=60
+  )
+  if resp.status_code >= 300:
+    raise RuntimeError(f"Failed to register version: {resp.text}")
+  return resp.json()
+
+
 @st.cache_data(ttl=60)
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:
   if not WORKER_API_BASE or not run_id:
@@ -329,6 +348,44 @@ def execute_mapping_job(
   if resp.status_code >= 300:
     raise RuntimeError(f"Failed to execute mapping job: {resp.text}")
   return resp.json()
+
+
+def parse_execution_info(payload: Dict[str, Any]) -> Dict[str, str]:
+  metadata = payload.get("metadata") if isinstance(payload, dict) else None
+  if not isinstance(metadata, dict):
+    return {}
+  name = metadata.get("name")
+  log_uri = metadata.get("logUri")
+  return {
+    "execution_name": name or "",
+    "log_uri": log_uri or ""
+  }
+
+
+def get_execution_status(execution_name: str) -> Optional[Dict[str, Any]]:
+  if not execution_name:
+    return None
+  token = gcp_access_token()
+  url = f"https://run.googleapis.com/v2/{execution_name}"
+  resp = requests.get(
+    url,
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    timeout=30
+  )
+  if resp.status_code >= 300:
+    raise RuntimeError(f"Failed to fetch execution status: {resp.text}")
+  return resp.json()
+
+
+def summarize_execution(status_payload: Dict[str, Any]) -> Dict[str, str]:
+  status = status_payload.get("status", {})
+  conditions = status.get("conditions", []) or []
+  completed = next((c for c in conditions if c.get("type") == "Completed"), {})
+  state = completed.get("status") or "Unknown"
+  reason = completed.get("reason") or ""
+  message = completed.get("message") or ""
+  log_uri = status.get("logUri") or ""
+  return {"state": state, "reason": reason, "message": message, "log_uri": log_uri}
 
 
 @st.cache_data(ttl=120)
@@ -527,14 +584,59 @@ with tab_run:
         with st.spinner("Creating run and executing job..."):
           run_id = trigger_run(version_id, mapping_bundle_id or None)
           response = execute_pipeline_job(version_id, run_id, mapping_bundle_id or None)
+          exec_info = parse_execution_info(response)
+          if exec_info.get("execution_name"):
+            st.session_state["last_pipeline_execution"] = exec_info
         st.success(f"Run started: {run_id}")
         st.json(response)
+      except Exception as exc:
+        st.error(str(exc))
+
+  exec_info = st.session_state.get("last_pipeline_execution", {})
+  if exec_info:
+    st.subheader("Latest pipeline execution")
+    st.write("Execution name:", exec_info.get("execution_name", ""))
+    if exec_info.get("log_uri"):
+      st.markdown(f"[Open logs]({exec_info['log_uri']})")
+    if st.button("Check pipeline status"):
+      try:
+        status_payload = get_execution_status(exec_info.get("execution_name", ""))
+        if status_payload:
+          summary = summarize_execution(status_payload)
+          st.write("State:", summary.get("state"))
+          if summary.get("reason"):
+            st.write("Reason:", summary.get("reason"))
+          if summary.get("message"):
+            st.caption(summary.get("message"))
+          if summary.get("log_uri"):
+            st.markdown(f"[Open logs]({summary['log_uri']})")
       except Exception as exc:
         st.error(str(exc))
   st.markdown("</div>", unsafe_allow_html=True)
 
 with tab_mapping:
   st.markdown("<div class='card'>", unsafe_allow_html=True)
+  st.subheader("Upload raw CSV")
+  uploaded_raw = st.file_uploader("Raw dataset CSV", type=["csv"], key="raw_csv")
+  supplied_version_id = st.text_input("Version id (optional)", value="", key="raw_version_id")
+  if st.button("Upload raw dataset"):
+    if not uploaded_raw:
+      st.error("Please select a CSV file to upload")
+    else:
+      try:
+        with st.spinner("Uploading dataset..."):
+          payload = register_version_upload(
+            uploaded_raw.getvalue(),
+            uploaded_raw.name,
+            supplied_version_id.strip() or None
+          )
+        st.success(f"Registered version: {payload.get('version_id')}")
+        st.json(payload)
+        list_versions.clear()
+      except Exception as exc:
+        st.error(str(exc))
+
+  st.divider()
   st.subheader("AI proposal job")
   versions = list_versions()
   version_ids = [row.get("version_id") for row in versions if row.get("version_id")]
@@ -557,8 +659,32 @@ with tab_mapping:
               "GEMINI_MODEL": proposal_model
             }
           )
+          exec_info = parse_execution_info(response)
+          if exec_info.get("execution_name"):
+            st.session_state["last_mapping_execution"] = exec_info
         st.success("Proposal job started")
         st.json(response)
+      except Exception as exc:
+        st.error(str(exc))
+
+  exec_info = st.session_state.get("last_mapping_execution", {})
+  if exec_info:
+    st.subheader("Latest mapping execution")
+    st.write("Execution name:", exec_info.get("execution_name", ""))
+    if exec_info.get("log_uri"):
+      st.markdown(f"[Open logs]({exec_info['log_uri']})")
+    if st.button("Check mapping status"):
+      try:
+        status_payload = get_execution_status(exec_info.get("execution_name", ""))
+        if status_payload:
+          summary = summarize_execution(status_payload)
+          st.write("State:", summary.get("state"))
+          if summary.get("reason"):
+            st.write("Reason:", summary.get("reason"))
+          if summary.get("message"):
+            st.caption(summary.get("message"))
+          if summary.get("log_uri"):
+            st.markdown(f"[Open logs]({summary['log_uri']})")
       except Exception as exc:
         st.error(str(exc))
 
@@ -571,6 +697,8 @@ with tab_mapping:
       if not keys:
         st.info("No objects found for prefix")
       else:
+        csv_count = len([key for key in keys if key.endswith(".csv")])
+        st.caption(f"Found {len(keys)} objects ({csv_count} CSVs)")
         selected_key = st.selectbox("Select object", options=keys)
         if selected_key:
           data = r2_get_bytes(selected_key)
@@ -580,6 +708,37 @@ with tab_mapping:
             file_name=os.path.basename(selected_key),
             mime="text/csv" if selected_key.endswith(".csv") else "application/json"
           )
+    except Exception as exc:
+      st.error(str(exc))
+
+  st.divider()
+  st.subheader("Approve mappings")
+  approve_prefix = st.text_input("Proposal prefix to approve", value=proposal_prefix, key="approve_prefix")
+  if approve_prefix:
+    try:
+      approve_keys = [key for key in r2_list_keys(approve_prefix.rstrip("/") + "/") if key.endswith(".csv")]
+      if not approve_keys:
+        st.info("No CSV proposals found")
+      else:
+        approve_key = st.selectbox("Select proposal CSV", options=approve_keys, key="approve_key")
+        if approve_key:
+          csv_bytes = r2_get_bytes(approve_key)
+          df = pd.read_csv(io.BytesIO(csv_bytes))
+          if "approved" not in df.columns:
+            df["approved"] = 0
+          st.caption(f"Rows: {len(df)}")
+          if st.button("Approve rows with normalized_value", key="approve_non_empty"):
+            df["approved"] = df["normalized_value"].astype(str).str.strip().ne("").astype(int)
+          if st.button("Approve all rows", key="approve_all"):
+            df["approved"] = 1
+          safe_key = approve_key.replace("/", "_")
+          edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key=f"editor_{safe_key}")
+          if st.button("Save approved CSV", key="save_approved_csv"):
+            try:
+              r2_put_bytes(approve_key, edited_df.to_csv(index=False).encode("utf-8"), "text/csv")
+              st.success(f"Saved approvals to {approve_key}")
+            except Exception as exc:
+              st.error(str(exc))
     except Exception as exc:
       st.error(str(exc))
 
