@@ -2,7 +2,7 @@ import argparse
 import io
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import vertexai
@@ -25,6 +25,7 @@ from mapping.utils import (
 
 
 ALLOWED_ACTIONS = {"map_values", "parse_numeric", "split_list", "consolidate", "skip"}
+MAX_MODEL_ATTEMPTS = 3
 
 
 def build_model(model_name: str) -> GenerativeModel:
@@ -68,6 +69,15 @@ def build_prompt(context: Dict[str, Any]) -> str:
     "- Prefer skip for free-text fields.\n"
     "Context JSON:\n"
     f"{json.dumps(context, ensure_ascii=False, indent=2)}\n"
+  )
+
+
+def build_retry_prompt(base_prompt: str, error: str) -> str:
+  return (
+    f"{base_prompt}\n"
+    "Previous response was invalid.\n"
+    f"Reason: {error}\n"
+    "Return ONLY valid JSON matching the schema."
   )
 
 
@@ -142,6 +152,18 @@ def default_normalized_column(column: str, action: str) -> str:
   return base
 
 
+def fallback_skip_output(column: str, reason: str) -> Dict[str, Any]:
+  return {
+    "column": column,
+    "normalized_column": default_normalized_column(column, "skip"),
+    "action": "skip",
+    "value_map": [],
+    "list_delimiters": [],
+    "notes": f"auto-skip: {reason}",
+    "confidence": 0.0
+  }
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Propose mapping bundle")
   parser.add_argument("--version_id", required=True)
@@ -185,29 +207,50 @@ def main() -> None:
       "distinct_values": distinct_values
     }
 
-    prompt = build_prompt(context)
-    prompt_hash = sha256_text(prompt)
+    base_prompt = build_prompt(context)
     input_hash = sha256_text(json.dumps(distinct_values, ensure_ascii=False, separators=(",", ":")))
 
-    response = model.generate_content(
-      prompt,
-      generation_config=GenerationConfig(
-        temperature=0.2,
-        response_mime_type="application/json"
-      )
-    )
-    output = safe_json_loads(response.text or "")
-    if not isinstance(output, dict):
-      raise RuntimeError(f"Invalid AI response for column {column}: expected JSON object")
+    output: Dict[str, Any]
+    prompt_hash = ""
+    last_error: Optional[str] = None
+    for attempt in range(MAX_MODEL_ATTEMPTS):
+      prompt = base_prompt
+      if last_error:
+        prompt = build_retry_prompt(base_prompt, last_error)
+      prompt_hash = sha256_text(prompt)
+      try:
+        response = model.generate_content(
+          prompt,
+          generation_config=GenerationConfig(
+            temperature=0.2,
+            response_mime_type="application/json"
+          )
+        )
+        output = safe_json_loads(response.text or "")
+        if not isinstance(output, dict):
+          raise ValueError("expected JSON object")
+        action = output.get("action")
+        if action not in ALLOWED_ACTIONS:
+          raise ValueError(f"invalid action '{action}'")
+        break
+      except Exception as exc:
+        last_error = str(exc)
+        output = {}
+        if attempt == MAX_MODEL_ATTEMPTS - 1:
+          output = fallback_skip_output(column, last_error)
+    else:
+      output = fallback_skip_output(column, "invalid model response")
+      prompt_hash = sha256_text(base_prompt)
+      action = output.get("action")
 
     action = output.get("action")
-    if action not in ALLOWED_ACTIONS:
-      raise RuntimeError(f"Invalid action for column {column}: {action}")
-
     normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
     value_map = output.get("value_map", [])
     if not isinstance(value_map, list):
-      raise RuntimeError(f"Invalid value_map for column {column}")
+      output = fallback_skip_output(column, "invalid value_map")
+      action = output.get("action")
+      normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
+      value_map = []
     mapping = build_value_map(value_map)
     list_delimiters = output.get("list_delimiters") or list_delimiters
     if not isinstance(list_delimiters, list):
@@ -215,17 +258,23 @@ def main() -> None:
 
     rows: List[Dict[str, Any]] = []
     if action == "map_values":
-      for raw_value in distinct_values:
-        if raw_value not in mapping:
-          raise RuntimeError(f"Missing mapping for raw value '{raw_value}' in column {column}")
-        entry = mapping[raw_value]
-        rows.append({
-          "raw_value": raw_value,
-          "normalized_value": entry.get("normalized") or "",
-          "confidence": entry.get("confidence") or "",
-          "approved": 0,
-          "notes": ""
-        })
+      missing_values = [raw_value for raw_value in distinct_values if raw_value not in mapping]
+      if missing_values:
+        output = fallback_skip_output(column, "incomplete value_map")
+        action = output.get("action")
+        normalized_column = output.get("normalized_column") or default_normalized_column(column, action)
+        value_map = []
+        mapping = {}
+      else:
+        for raw_value in distinct_values:
+          entry = mapping[raw_value]
+          rows.append({
+            "raw_value": raw_value,
+            "normalized_value": entry.get("normalized") or "",
+            "confidence": entry.get("confidence") or "",
+            "approved": 0,
+            "notes": ""
+          })
     else:
       for raw_value in distinct_values:
         rows.append({
