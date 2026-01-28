@@ -31,6 +31,7 @@ ALLOWED_ACTIONS = {"map_values", "parse_numeric", "split_list", "consolidate", "
 MAX_MODEL_ATTEMPTS = 3
 MODEL_TIMEOUT_SECONDS = int(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
 GROUP_SAMPLE_ROWS = int(os.getenv("GROUP_SAMPLE_ROWS", "20"))
+MAX_GROUP_WORKERS = int(os.getenv("MAX_GROUP_WORKERS", "10"))
 
 
 def build_client() -> genai.Client:
@@ -342,6 +343,9 @@ def main() -> None:
         usage_totals[key] = usage_totals.get(key, 0) + int(value)
     grouping_output = safe_json_loads(grouping_response.text or "")
     groups = normalize_group_assignments(columns, grouping_output.get("groups", []))
+    group_sizes = [len(group.get("columns", [])) for group in groups]
+    log(f"[grouping] groups={len(groups)} max_size={max(group_sizes) if group_sizes else 0} singles={sum(1 for size in group_sizes if size == 1)}")
+    log(f"[grouping] sizes={group_sizes}")
   except Exception as exc:
     log(f"[grouping] error: {exc}")
     groups = [{"group_name": "singleton", "columns": [col], "notes": ""} for col in columns]
@@ -518,7 +522,9 @@ def main() -> None:
       manifest_key = f"{output_prefix}/{column}.manifest.json"
       upload_bytes(group_s3_client, bucket, manifest_key, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
 
-  with ThreadPoolExecutor(max_workers=len(groups) or 1) as executor:
+  max_workers = min(max(len(groups), 1), MAX_GROUP_WORKERS)
+  log(f"[grouping] max_workers={max_workers}")
+  with ThreadPoolExecutor(max_workers=max_workers) as executor:
     list(executor.map(process_group, groups))
 
   consolidations_key = f"{output_prefix}/consolidations.json"
