@@ -9,6 +9,7 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+*.egg-info/
 
 # Build artifacts
 /dist/
