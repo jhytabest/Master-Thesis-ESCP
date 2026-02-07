@@ -1,0 +1,58 @@
+feature,target,test,n,statistic,p_value,effect_size,effect_label,n_groups,groups,p_value_adj,significant_fdr05
+fundoing_new,target_total_funding,spearman,420,0.991,0.0,0.991,large,,,0.0,True
+FOUNDERS FOUNDED COMPANIES TOTAL FUNDING,target_total_funding,spearman,123,0.957,6.768340352869839e-67,0.957,large,,,1.928977000567904e-65,True
+fundoing_new,target_rounds,spearman,487,0.622,1.760159302381828e-53,0.622,large,,,3.344302674525473e-52,True
+FOUNDERS FOUNDED COMPANIES TOTAL FUNDING,target_rounds,spearman,126,0.513,8.148836646646551e-10,0.513,large,,,6.635481269412192e-09,True
+GROWTH STAGE,target_total_funding,kruskal_wallis,418,126.9318,2.7359701512164975e-28,0.3044,large,3.0,early growth stage(n=213); late growth stage(n=61); seed stage(n=144),3.898757465483509e-27,True
+FOUNDERS ESTIMATED AGE,target_total_funding,spearman,150,0.3029,0.00016511594046502394,0.3029,medium,,,0.0009411608606506364,True
+7_MBA,target_rounds,point_biserial,460,0.2624,1.1165374392846676e-08,0.2624,small,,,7.955329254903257e-08,True
+6_was_1_change_founders,target_total_funding,point_biserial,409,0.2106,1.7466587937569234e-05,0.2106,small,,,0.00011062172360460513,True
+GROWTH STAGE,target_rounds,kruskal_wallis,493,102.8498,3.7901783602602427e-22,0.209,large,4.0,early growth stage(n=242); late growth stage(n=64); mature stage(n=8); seed stage(n=179),4.320803330696677e-21,True
+2_ceo_profile,target_total_funding,kruskal_wallis,370,76.3379,1.0384075363213557e-15,0.2069,large,5.0,business(n=90); engineer(n=91); mixte(n=91); scientific(n=67); university(n=31),9.864871595052878e-15,True
+FOUNDERS ESTIMATED AGE,target_rounds,spearman,182,0.1935,0.00885066369134076,0.1935,small,,,0.03153048940040146,True
+FOUNDERS FOUNDED COMPANIES TOTAL FUNDING,target_delta_1st_round,spearman,113,-0.1877,0.04651441901675147,0.1877,small,,,0.09819710681314199,False
+3_one_founder_serial,target_total_funding,point_biserial,349,0.1676,0.0016820720875034734,0.1676,small,,,0.007989842415641499,True
+0_founders_number,target_rounds,spearman,458,0.1607,0.0005546389903636127,0.1607,small,,,0.002874038404611448,True
+8_age_moyen,target_delta_1st_round,spearman,313,0.1513,0.00732518686893002,0.1513,small,,,0.02850200785220842,True
+7_MBA,target_total_funding,point_biserial,392,0.1459,0.0037994863156400735,0.1459,small,,,0.01665928615319109,True
+CEO ESTIMATED AGE,target_delta_1st_round,spearman,309,0.1385,0.01481637715324352,0.1385,small,,,0.04444913145973056,True
+0_founders_number,target_delta_1st_round,spearman,395,-0.1343,0.007500528382160111,0.1343,small,,,0.02850200785220842,True
+CEO ESTIMATED AGE,target_total_funding,spearman,298,0.1264,0.029187124817857776,0.1264,small,,,0.07423136881623736,False
+8_age_moyen,target_total_funding,spearman,301,0.1246,0.030655476447681282,0.1246,small,,,0.07423136881623736,False
+FOUNDERS YEARS OF EDUCATION,target_rounds,spearman,94,0.1183,0.25596153627254337,0.1183,small,,,0.39431912344689113,False
+3_one_founder_was_serial_at_creation,target_rounds,point_biserial,462,0.1171,0.011790096122488823,0.1171,small,,,0.03953149876363899,True
+3_one_founder_was_serial_at_creation,target_total_funding,point_biserial,393,0.1132,0.024847414785721188,0.1132,small,,,0.06744298298981465,False
+6_was_1_change_founders,target_rounds,point_biserial,481,0.1132,0.012991861020734552,0.1132,small,,,0.04114089323232608,True
+0_founders_number,target_total_funding,spearman,388,0.1094,0.03125531318578415,0.1094,small,,,0.07423136881623736,False
+FOUNDERS YEARS OF EDUCATION,target_delta_1st_round,spearman,85,-0.099,0.36754881548397134,0.099,negligible,,,0.5237570620646592,False
+3_one_founder_serial,target_rounds,point_biserial,418,0.0976,0.046068207777941454,0.0976,negligible,,,0.09819710681314199,False
+7_MBA,target_delta_1st_round,point_biserial,399,-0.094,0.06075441268229229,0.094,negligible,,,0.1236786258175236,False
+3_one_founder_serial,target_delta_1st_round,point_biserial,359,0.086,0.10377981559961819,0.086,negligible,,,0.20398101686821504,False
+fundoing_new,target_delta_1st_round,spearman,418,-0.0753,0.12447136977210596,0.0753,negligible,,,0.23649560256700133,False
+5_has_female,target_rounds,point_biserial,483,-0.0655,0.15069513040722982,0.0655,negligible,,,0.27708459461974516,False
+4_phd_founder,target_total_funding,point_biserial,392,-0.0605,0.23173973509450335,0.0605,negligible,,,0.3732854333291674,False
+6_was_1_change_founders,target_delta_1st_round,point_biserial,414,-0.0531,0.2812960724185613,0.0531,negligible,,,0.42194410862784193,False
+3_one_founder_was_serial_at_creation,target_delta_1st_round,point_biserial,398,0.0488,0.33165266871984533,0.0488,negligible,,,0.48472313120592775,False
+DELIVERY METHOD,target_total_funding,kruskal_wallis,45,1.8119,0.40414894014297364,0.0412,small,3.0,offline(n=21); online(n=15); saas/webapp(n=9),0.5484878473368928,False
+CEO ESTIMATED AGE,target_rounds,spearman,356,0.0391,0.46170936422535647,0.0391,negligible,,,0.5735706392697828,False
+5_has_female,target_total_funding,point_biserial,410,-0.0384,0.4375701338924461,0.0384,negligible,,,0.5706949755999166,False
+FOUNDERS ESTIMATED AGE,target_delta_1st_round,spearman,161,-0.0376,0.63580059799658,0.0376,negligible,,,0.7106006683491187,False
+FOUNDERS YEARS OF EDUCATION,target_total_funding,spearman,80,-0.0359,0.7520395817062746,0.0359,negligible,,,0.7938195584677343,False
+8_age_moyen,target_rounds,spearman,360,0.0297,0.574050842483371,0.0297,negligible,,,0.6667360293856042,False
+DELIVERY METHOD,target_delta_1st_round,kruskal_wallis,38,1.0728,0.584856166127723,0.029,small,3.0,offline(n=20); online(n=13); saas/webapp(n=5),0.6667360293856042,False
+DELIVERY METHOD,target_rounds,kruskal_wallis,45,1.2524,0.5346155150923209,0.0285,small,3.0,offline(n=21); online(n=15); saas/webapp(n=9),0.634855924172131,False
+2_ceo_profile,target_rounds,kruskal_wallis,433,12.1294,0.01641422621126441,0.0281,small,5.0,business(n=101); engineer(n=113); mixte(n=103); scientific(n=85); university(n=31),0.04678054470210356,True
+REVENUE MODEL,target_delta_1st_round,kruskal_wallis,323,6.4901,0.03896645483023623,0.0202,small,3.0,manufacturing(n=228); manufacturing;saas(n=14); saas(n=81),0.0888435170129386,False
+11_industry_simplified,target_total_funding,kruskal_wallis,420,7.283,0.20042871013309335,0.0174,small,6.0,autres(n=45); numérique(n=58); santé(n=203); vide(n=19); électronique(n=46); énergie(n=49),0.33601283757606826,False
+4_phd_founder,target_delta_1st_round,point_biserial,399,-0.0164,0.7443711383444181,0.0164,negligible,,,0.7938195584677343,False
+11_industry_simplified,target_rounds,kruskal_wallis,493,7.4216,0.19112736952987364,0.0151,small,6.0,autres(n=53); numérique(n=66); santé(n=236); vide(n=26); électronique(n=54); énergie(n=58),0.3301290928243272,False
+11_industry_simplified,target_delta_1st_round,kruskal_wallis,424,4.6285,0.4628815685335089,0.0109,small,6.0,autres(n=46); numérique(n=57); santé(n=200); vide(n=24); électronique(n=46); énergie(n=51),0.5735706392697828,False
+4_phd_founder,target_rounds,point_biserial,460,-0.0096,0.8365213455872808,0.0096,negligible,,,0.8531572395515716,False
+B2B/B2C,target_delta_1st_round,kruskal_wallis,397,3.505,0.1733395141482529,0.0089,negligible,3.0,business(n=332); business;consumer(n=18); consumer(n=47),0.3087610095765755,False
+REVENUE MODEL,target_rounds,kruskal_wallis,375,3.031,0.3868758733286985,0.0081,negligible,4.0,manufacturing(n=263); manufacturing;marketplace & ecommerce(n=5); manufacturing;saas(n=16); saas(n=91),0.5378518238959954,False
+B2B/B2C,target_rounds,kruskal_wallis,456,2.8899,0.23575922105000047,0.0064,negligible,3.0,business(n=381); business;consumer(n=21); consumer(n=54),0.3732854333291674,False
+2_ceo_profile,target_delta_1st_round,kruskal_wallis,375,1.9593,0.7432514125112193,0.0052,negligible,5.0,business(n=91); engineer(n=97); mixte(n=90); scientific(n=69); university(n=28),0.7938195584677343,False
+REVENUE MODEL,target_total_funding,kruskal_wallis,326,1.4183,0.49207443684725183,0.0044,negligible,3.0,manufacturing(n=228); manufacturing;saas(n=16); saas(n=82),0.5967711255381565,False
+5_has_female,target_delta_1st_round,point_biserial,416,0.0042,0.9326656686862274,0.0042,negligible,,,0.9326656686862274,False
+B2B/B2C,target_total_funding,kruskal_wallis,396,1.6395,0.44053647239291804,0.0042,negligible,3.0,business(n=327); business;consumer(n=21); consumer(n=48),0.5706949755999166,False
+GROWTH STAGE,target_delta_1st_round,kruskal_wallis,421,0.353,0.8381895686822458,0.0008,negligible,3.0,early growth stage(n=213); late growth stage(n=58); seed stage(n=150),0.8531572395515716,False
