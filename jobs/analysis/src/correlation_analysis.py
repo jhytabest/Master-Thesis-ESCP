@@ -24,7 +24,6 @@ Outputs → jobs/analysis/output/correlation_*
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists())
 DATA_PATH = REPO_ROOT / "dataset.csv"
 OUT_DIR = REPO_ROOT / "jobs" / "analysis" / "output"
 
@@ -86,26 +85,30 @@ def safe_numeric(s: pd.Series) -> pd.Series:
 
 
 def benjamini_hochberg(pvals: pd.Series) -> pd.Series:
-    """Benjamini-Hochberg FDR correction."""
-    n = len(pvals)
-    ranked = pvals.rank(method="first")
-    adjusted = pvals * n / ranked
-    # Enforce monotonicity (step-down)
-    adjusted = adjusted.clip(upper=1.0)
-    sorted_idx = pvals.sort_values(ascending=False).index
-    cummin = adjusted.loc[sorted_idx].cummin()
-    return cummin.reindex(pvals.index)
+    """Benjamini-Hochberg FDR correction using statsmodels."""
+    from statsmodels.stats.multitest import multipletests
+
+    pvals_notna = pvals.dropna()
+    if pvals_notna.empty:
+        return pd.Series(index=pvals.index, dtype=float)
+
+    _, pvals_adj_array, _, _ = multipletests(pvals_notna.values, alpha=0.05, method="fdr_bh")
+    pvals_adj = pd.Series(pvals_adj_array, index=pvals_notna.index)
+    return pvals_adj.reindex(pvals.index)
 
 
 def spearman_correlations(df: pd.DataFrame) -> pd.DataFrame:
     """Spearman correlations between numeric features and targets."""
     rows = []
+    target_series = {t: safe_numeric(df[t]) for t in TARGETS if t in df.columns}
     for feat in NUMERIC_FEATURES:
         if feat not in df.columns:
             continue
         x = safe_numeric(df[feat])
         for target in TARGETS:
-            y = safe_numeric(df[target])
+            y = target_series.get(target)
+            if y is None:
+                continue
             mask = x.notna() & y.notna()
             n = mask.sum()
             if n < MIN_N:
@@ -127,6 +130,7 @@ def spearman_correlations(df: pd.DataFrame) -> pd.DataFrame:
 def pointbiserial_correlations(df: pd.DataFrame) -> pd.DataFrame:
     """Point-biserial correlations between binary features and targets."""
     rows = []
+    target_series = {t: safe_numeric(df[t]) for t in TARGETS if t in df.columns}
     for feat in BINARY_FEATURES:
         if feat not in df.columns:
             continue
@@ -136,7 +140,9 @@ def pointbiserial_correlations(df: pd.DataFrame) -> pd.DataFrame:
         if not set(unique).issubset({0, 1, 0.0, 1.0}):
             continue
         for target in TARGETS:
-            y = safe_numeric(df[target])
+            y = target_series.get(target)
+            if y is None:
+                continue
             mask = x.notna() & y.notna()
             n = mask.sum()
             if n < MIN_N:
@@ -158,11 +164,14 @@ def pointbiserial_correlations(df: pd.DataFrame) -> pd.DataFrame:
 def kruskal_wallis_tests(df: pd.DataFrame) -> pd.DataFrame:
     """Kruskal-Wallis H-test for categorical features vs targets."""
     rows = []
+    target_series = {t: safe_numeric(df[t]) for t in TARGETS if t in df.columns}
     for feat in CATEGORICAL_FEATURES:
         if feat not in df.columns:
             continue
         for target in TARGETS:
-            y = safe_numeric(df[target])
+            y = target_series.get(target)
+            if y is None:
+                continue
             # Group by category
             groups = []
             labels = []
@@ -307,11 +316,14 @@ def main() -> None:
     else:
         for _, row in sig.iterrows():
             direction = ""
+            stat_label = "r"
             if row["test"] in ("spearman", "point_biserial"):
                 direction = " (+)" if row["statistic"] > 0 else " (−)"
+            elif row["test"] == "kruskal_wallis":
+                stat_label = "H"
             md.append(
                 f"- **{row['feature']}** → {row['target']}: "
-                f"{row['test']}, r={row['statistic']:.3f}{direction}, "
+                f"{row['test']}, {stat_label}={row['statistic']:.3f}{direction}, "
                 f"p_adj={row['p_value_adj']:.4f}, "
                 f"effect={row['effect_label']} ({row['effect_size']:.3f}), "
                 f"n={row['n']}\n"
@@ -328,7 +340,8 @@ def main() -> None:
             md.append(f"### {target}\n")
             top3 = target_sig.head(3)
             for _, row in top3.iterrows():
-                md.append(f"- {row['feature']} ({row['effect_label']} effect, r={row['statistic']:.3f})\n")
+                sl = "H" if row["test"] == "kruskal_wallis" else "r"
+                md.append(f"- {row['feature']} ({row['effect_label']} effect, {sl}={row['statistic']:.3f})\n")
             md.append("\n")
 
     md.append("## Figures\n\n")
