@@ -133,14 +133,18 @@ def bootstrap_ols(X: pd.DataFrame, y: pd.Series, B: int = 2000, seed: int = 42) 
     rng = np.random.default_rng(seed)
     n = len(y)
     coefs = []
+    failures = 0
     X_vals, y_vals = X.values, y.values
     for _ in range(B):
         idx = rng.choice(n, size=n, replace=True)
         try:
             m = sm.OLS(y_vals[idx], X_vals[idx]).fit()
             coefs.append(m.params)
-        except Exception:
+        except (np.linalg.LinAlgError, ValueError):
+            failures += 1
             continue
+    if failures > 0:
+        print(f"Warning: {failures}/{B} bootstrap samples failed.")
     coef_df = pd.DataFrame(coefs, columns=X.columns)
     summary = pd.DataFrame({
         "mean": coef_df.mean(),
@@ -222,12 +226,11 @@ def main() -> None:
 
     boot = bootstrap_ols(X_full, y_full, B=2000)
     boot_path = OUT_DIR / "robustness_bootstrap_cis.csv"
-    boot.to_csv(boot_path)
+    boot.to_csv(boot_path, index_label="feature")
     print(f"Bootstrap CIs saved: {boot_path}")
 
     # Compare bootstrap vs analytic
     analytic = baseline["model"].summary2().tables[1]
-    p_col = "P>|z|" if "P>|z|" in analytic.columns else "P>|t|"
     md.append("| Feature | OLS Coef | HC3 CI | Bootstrap CI | Consistent? |\n")
     md.append("|---------|----------|--------|--------------|-------------|\n")
     for feat in boot.index:
