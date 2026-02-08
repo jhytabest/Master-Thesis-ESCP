@@ -123,7 +123,7 @@ def compute_vif(X: pd.DataFrame) -> pd.DataFrame:
     for i, col in enumerate(cols):
         try:
             vif_val = variance_inflation_factor(X_no_const, i)
-        except Exception:
+        except (np.linalg.LinAlgError, ValueError):
             vif_val = np.nan
         vifs.append({"feature": col, "VIF": round(vif_val, 2)})
     return pd.DataFrame(vifs)
@@ -151,10 +151,11 @@ def run_ols(X: pd.DataFrame, y: pd.Series, model_name: str) -> dict:
     # VIF
     vif_df = compute_vif(X)
 
-    # Effect sizes: standardized coefficients (beta weights)
+    # Effect sizes: fully standardized beta weights (both X and y standardized)
+    std_y = (y - y.mean()) / y.std() if y.std() > 0 else y
     std_X = X.drop(columns=["const"]).apply(lambda c: (c - c.mean()) / c.std() if c.std() > 0 else c)
     std_X = sm.add_constant(std_X)
-    std_model = sm.OLS(y, std_X).fit(cov_type="HC3")
+    std_model = sm.OLS(std_y, std_X).fit(cov_type="HC3")
     beta_weights = std_model.params.drop("const")
 
     # Plots
@@ -211,7 +212,7 @@ def run_negbin(X: pd.DataFrame, y: pd.Series, model_name: str) -> dict:
     # Fit Negative Binomial
     try:
         nb_model = sm.GLM(y, X, family=sm.families.NegativeBinomial()).fit()
-    except Exception:
+    except (np.linalg.LinAlgError, ValueError):
         # Fallback: use statsmodels NegativeBinomial with loglink
         nb_model = NegativeBinomial(y, X).fit(disp=0, maxiter=100)
 
@@ -393,7 +394,8 @@ def main() -> None:
         tbl.to_csv(OUT_DIR / f"regression_coef_{r['model_name'].lower().replace(' ', '_')}.csv")
 
     tbl_nb = r3["model"].summary2().tables[1]
-    tbl_nb.to_csv(OUT_DIR / f"regression_coef_negbin_rounds.csv")
+    nb_slug = r3["model_name"].lower().replace(" ", "_").replace("(", "").replace(")", "")
+    tbl_nb.to_csv(OUT_DIR / f"regression_coef_{nb_slug}.csv")
 
     print("Done.")
 
