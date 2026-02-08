@@ -39,12 +39,9 @@ def log(message: str) -> None:
 
 DEFAULT_FEATURE_LIST = [
   "company_status_clean",
-  "target_total_funding_eur",
   "last_funding_eur",
   "valuation_eur",
-  "target_rounds_num",
-  "stage_ordinal",
-  "has_funding"
+  "stage_ordinal"
 ]
 
 COLUMN_ALIASES = {
