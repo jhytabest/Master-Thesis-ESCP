@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 
 
 # File is at <repo>/jobs/analysis/src/eda_initial.py
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = next(p for p in Path(__file__).resolve().parents if (p / ".git").exists())
 DATA_PATH = REPO_ROOT / "dataset.csv"
 OUT_DIR = REPO_ROOT / "jobs" / "analysis" / "output"
 
@@ -119,24 +119,35 @@ def targets_summary(df: pd.DataFrame) -> pd.DataFrame:
             rows.append({"target": t, "present": False})
             continue
         s = safe_to_numeric(df[t])
-        rows.append(
-            {
-                "target": t,
-                "present": True,
-                "n": int(s.notna().sum()),
-                "missing": int(s.isna().sum()),
-                "missing_pct": float(s.isna().mean()),
-                "min": float(s.min(skipna=True)) if s.notna().any() else np.nan,
-                "p25": float(s.quantile(0.25)) if s.notna().any() else np.nan,
-                "median": float(s.median(skipna=True)) if s.notna().any() else np.nan,
-                "p75": float(s.quantile(0.75)) if s.notna().any() else np.nan,
-                "max": float(s.max(skipna=True)) if s.notna().any() else np.nan,
-                "mean": float(s.mean(skipna=True)) if s.notna().any() else np.nan,
-                "skew": float(s.skew(skipna=True)) if s.notna().any() else np.nan,
-                "zeros": int((s == 0).sum()) if s.notna().any() else 0,
-                "negatives": int((s < 0).sum()) if s.notna().any() else 0,
-            }
-        )
+        row = {
+            "target": t,
+            "present": True,
+            "n": int(s.notna().sum()),
+            "missing": int(s.isna().sum()),
+            "missing_pct": float(s.isna().mean()),
+            "min": np.nan,
+            "p25": np.nan,
+            "median": np.nan,
+            "p75": np.nan,
+            "max": np.nan,
+            "mean": np.nan,
+            "skew": np.nan,
+            "zeros": 0,
+            "negatives": 0,
+        }
+        if s.notna().any():
+            row.update({
+                "min": float(s.min()),
+                "p25": float(s.quantile(0.25)),
+                "median": float(s.median()),
+                "p75": float(s.quantile(0.75)),
+                "max": float(s.max()),
+                "mean": float(s.mean()),
+                "skew": float(s.skew()),
+                "zeros": int((s == 0).sum()),
+                "negatives": int((s < 0).sum()),
+            })
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
