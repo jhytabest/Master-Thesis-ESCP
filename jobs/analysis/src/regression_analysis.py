@@ -36,6 +36,8 @@ import pandas as pd
 from scipy import stats as sp_stats
 
 import statsmodels.api as sm
+
+from data_utils import clean_founders_number
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.stats.diagnostic import het_breuschpagan
 from statsmodels.discrete.discrete_model import NegativeBinomial
@@ -76,6 +78,8 @@ ALL_PREDICTORS = NUMERIC_PREDICTORS + BINARY_PREDICTORS + CATEGORICAL_PREDICTORS
 def load_and_prepare() -> pd.DataFrame:
     """Load dataset and prepare analysis-ready DataFrame."""
     df = pd.read_csv(DATA_PATH, low_memory=False)
+
+    df = clean_founders_number(df)
 
     # Convert targets and numeric predictors
     for col in ["target_delta_1st_round", "target_total_funding", "target_rounds"] + NUMERIC_PREDICTORS:

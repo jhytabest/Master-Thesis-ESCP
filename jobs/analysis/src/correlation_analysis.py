@@ -268,6 +268,8 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(DATA_PATH, low_memory=False)
 
+    df = clean_founders_number(df)
+
     print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
 
     # Run all three test families
