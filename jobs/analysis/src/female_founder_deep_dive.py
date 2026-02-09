@@ -111,7 +111,7 @@ def descriptive_breakdown(df: pd.DataFrame, md: list):
     md.append("### Sector Distribution\n\n")
     md.append("| Sector | Female % | Male % |\n")
     md.append("|--------|----------|--------|\n")
-    for sector in df["11_industry_simplified"].dropna().unique():
+    for sector in [s for s in df["11_industry_simplified"].dropna().unique() if s != "vide"]:
         f_pct = (female["11_industry_simplified"] == sector).mean() * 100
         m_pct = (male["11_industry_simplified"] == sector).mean() * 100
         if f_pct > 1 or m_pct > 1:
@@ -241,8 +241,8 @@ def mediation_analysis(df: pd.DataFrame, md: list):
             m_a = sm.OLS(mvar[m_mask], X_a[m_mask]).fit(cov_type="HC3")
             a_paths[mname] = (m_a.params["5_has_female"], m_a.pvalues["5_has_female"])
             md.append(f"| {mname} | {a_paths[mname][0]:.4f} | {a_paths[mname][1]:.4f} |\n")
-        except:
-            md.append(f"| {mname} | — | — |\n")
+        except Exception as e:
+            md.append(f"| {mname} | — | — | Error: {e} |\n")
 
     # Step 3: Direct effect controlling for mediators
     md.append("\n**Step 3 — Direct effect controlling for mediators:**\n\n")
@@ -263,7 +263,11 @@ def mediation_analysis(df: pd.DataFrame, md: list):
     md.append(f"**Indirect (mediated) effect:** {indirect:.4f} "
               f"({pct_mediated:.1f}% of total effect)\n\n")
 
-    if abs(direct_effect) < abs(total_effect) and direct_p > 0.05:
+    if abs(direct_effect) > abs(total_effect):
+        md.append("→ Evidence of **suppression effect**. The mediators (e.g., sector, team size) "
+                  "were masking a stronger underlying negative association between female founders and funding. "
+                  "Controlling for them reveals a larger direct effect.\n\n")
+    elif abs(direct_effect) < abs(total_effect) and direct_p > 0.05:
         md.append("→ The female founder effect is **substantially mediated** by composition differences. "
                   "When controlling for sector and team characteristics, the direct effect becomes non-significant.\n\n")
     elif abs(direct_effect) < abs(total_effect):
@@ -340,7 +344,7 @@ def propensity_matching(df: pd.DataFrame, md: list):
 
     # ATT
     att = matched_treat["log_funding"].mean() - matched_ctrl["log_funding"].mean()
-    att_euro = np.exp(matched_treat["log_funding"].mean()) - np.exp(matched_ctrl["log_funding"].mean())
+    att_euro = np.exp(matched_treat["log_funding"]).mean() - np.exp(matched_ctrl["log_funding"]).mean()
 
     # t-test on matched sample
     t_stat, t_p = sp_stats.ttest_ind(matched_treat["log_funding"], matched_ctrl["log_funding"])
@@ -383,8 +387,12 @@ def effect_size(df: pd.DataFrame, md: list):
     md.append(f"- Female median: {female['target_total_funding'].median():.2f} M€\n")
     md.append(f"- Male median: {male['target_total_funding'].median():.2f} M€\n\n")
 
-    # Cohen's d
-    pooled_std = np.sqrt((female["target_total_funding"].var() + male["target_total_funding"].var()) / 2)
+    # Cohen's d (weighted pooled std for unbalanced groups)
+    n_female = len(female["target_total_funding"].dropna())
+    n_male = len(male["target_total_funding"].dropna())
+    var_female = female["target_total_funding"].var()
+    var_male = male["target_total_funding"].var()
+    pooled_std = np.sqrt(((n_female - 1) * var_female + (n_male - 1) * var_male) / (n_female + n_male - 2))
     d = gap_mean / pooled_std
     md.append(f"**Cohen's d:** {d:.3f} ")
     if abs(d) < 0.2:
