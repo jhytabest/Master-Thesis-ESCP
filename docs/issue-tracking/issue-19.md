@@ -2,10 +2,16 @@
 
 Status: Draft implementation plan
 
-## Scope
-- [ ] Reproduce issue
-- [ ] Implement fix
-- [ ] Add/adjust tests
-- [ ] Update docs/output artifacts
+## Acceptance criteria
+- [ ] Root cause and implementation approach documented in this issue file
+- [ ] Code and/or analysis updates committed in this PR
+- [ ] Verification evidence added (tests, logs, or artifact diffs)
+- [ ] Follow-up risks and limitations noted
 
-Refs #19
+## Implementation plan
+- [ ] Reproduce residual diagnostics and isolate variables driving non-normality
+- [ ] Test transformations (log/Box-Cox/winsorization) for skewed predictors/targets
+- [ ] Evaluate robust or alternative model families (GLM/quantile/robust SEs)
+- [ ] Update model/report pipeline with chosen remedy and rationale
+- [ ] Add residual diagnostic outputs to artifacts for ongoing monitoring
+\nRefs #19
