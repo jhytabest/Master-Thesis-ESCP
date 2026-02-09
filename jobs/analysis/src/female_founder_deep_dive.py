@@ -37,7 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_PATH = REPO_ROOT / "dataset.csv"
 OUT_DIR = REPO_ROOT / "jobs" / "analysis" / "output"
 
-NUMERIC_PREDICTORS = ["0_founders_number", "8_age_moyen"]
+NUMERIC_PREDICTORS = ["founders_num", "8_age_moyen"]
 BINARY_PREDICTORS = [
     "5_has_female", "4_phd_founder", "7_MBA",
     "3_one_founder_serial", "6_was_1_change_founders",
@@ -47,14 +47,14 @@ CATEGORICAL_PREDICTORS = ["2_ceo_profile", "B2B/B2C"]
 
 def load() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, low_memory=False)
+    # Recode founders_number to numeric first (before any pd.to_numeric on predictors)
+    df["founders_num"] = df["0_founders_number"].replace({"4+": 4, "Personne morale": np.nan})
+
     for col in ["target_total_funding", "target_delta_1st_round", "target_rounds"] + NUMERIC_PREDICTORS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in BINARY_PREDICTORS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["log_total_funding"] = np.log(df["target_total_funding"].clip(lower=0.001))
-    # Recode founders_number to numeric
-    df["founders_num"] = df["0_founders_number"].replace({"4+": 4, "Personne morale": np.nan})
-    df["founders_num"] = pd.to_numeric(df["founders_num"], errors="coerce")
     return df
 
 
@@ -263,18 +263,18 @@ def mediation_analysis(df: pd.DataFrame, md: list):
     md.append(f"**Indirect (mediated) effect:** {indirect:.4f} "
               f"({pct_mediated:.1f}% of total effect)\n\n")
 
-    if abs(direct_effect) > abs(total_effect):
-        md.append("→ Evidence of **suppression effect**. The mediators (e.g., sector, team size) "
-                  "were masking a stronger underlying negative association between female founders and funding. "
-                  "Controlling for them reveals a larger direct effect.\n\n")
+    if (np.sign(direct_effect) * np.sign(total_effect) == -1) or (abs(direct_effect) > abs(total_effect)):
+        md.append("→ Evidence of **inconsistent mediation (suppression)**. "
+                  "Controlling for mediators reveals a stronger, significant direct negative effect, "
+                  "suggesting the mediators were masking the true extent of the association.\n\n")
     elif abs(direct_effect) < abs(total_effect) and direct_p > 0.05:
-        md.append("→ The female founder effect is **substantially mediated** by composition differences. "
+        md.append("→ The female founder effect appears to be **fully mediated** by composition differences. "
                   "When controlling for sector and team characteristics, the direct effect becomes non-significant.\n\n")
     elif abs(direct_effect) < abs(total_effect):
-        md.append("→ **Partial mediation**: composition differences explain some of the gap, "
-                  "but a direct effect remains.\n\n")
+        md.append("→ **Partial mediation** observed: composition differences explain some of the gap, "
+                  "but a significant direct effect remains.\n\n")
     else:
-        md.append("→ Little evidence of mediation through these variables.\n\n")
+        md.append("→ Little evidence of mediation through these variables. The direct effect is similar to the total effect.\n\n")
 
 
 # ── 4. Propensity Score Matching ──────────────────────────────────────────
@@ -344,10 +344,10 @@ def propensity_matching(df: pd.DataFrame, md: list):
 
     # ATT
     att = matched_treat["log_funding"].mean() - matched_ctrl["log_funding"].mean()
-    att_euro = np.exp(matched_treat["log_funding"]).mean() - np.exp(matched_ctrl["log_funding"]).mean()
+    att_euro = matched_treat["target_total_funding"].mean() - matched_ctrl["target_total_funding"].mean()
 
     # t-test on matched sample
-    t_stat, t_p = sp_stats.ttest_ind(matched_treat["log_funding"], matched_ctrl["log_funding"])
+    t_stat, t_p = sp_stats.ttest_rel(matched_treat["log_funding"].values, matched_ctrl["log_funding"].values)
 
     md.append(f"**ATT (Average Treatment Effect on Treated):**\n")
     md.append(f"- Log scale: {att:.4f}\n")
