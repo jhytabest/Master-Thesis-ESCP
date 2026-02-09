@@ -16,3 +16,15 @@ Research-first, traceable "CSV in -> analysis + predictions out" pipeline for Fr
 
 - See `docs/architecture.md` for the implementation plan and contracts.
 - Start with `apps/worker-api` to create D1 tables and Worker endpoints.
+
+## Admin CLI
+
+A unified repository CLI is available at `tools/repo_admin.py`.
+
+Examples:
+
+- `python tools/repo_admin.py status`
+- `python tools/repo_admin.py doctor --component analysis`
+- `python tools/repo_admin.py analysis run --step all`
+- `python tools/repo_admin.py mapping propose --version-id <id> --dry-run`
+- `python tools/repo_admin.py pipeline run --version-id <id> --dry-run`
