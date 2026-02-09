@@ -32,6 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+np.random.seed(42)  # Reproducibility
 import pandas as pd
 from scipy import stats as sp_stats
 
