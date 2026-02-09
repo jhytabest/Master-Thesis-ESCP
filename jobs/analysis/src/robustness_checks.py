@@ -52,6 +52,9 @@ REDUCED_NUMERIC = ["0_founders_number"]  # Drop 8_age_moyen (VIF=6.41, less theo
 
 def load_and_prepare() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, low_memory=False)
+
+    # Clean non-numeric values in 0_founders_number (e.g., '4+', 'Personne morale')
+    df["0_founders_number"] = df["0_founders_number"].replace({"4+": "4", "Personne morale": None})
     for col in ["target_delta_1st_round", "target_total_funding", "target_rounds"] + NUMERIC_PREDICTORS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in BINARY_PREDICTORS:

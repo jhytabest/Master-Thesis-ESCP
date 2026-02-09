@@ -268,6 +268,9 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(DATA_PATH, low_memory=False)
 
+    # Clean non-numeric values in 0_founders_number (e.g., '4+', 'Personne morale')
+    df["0_founders_number"] = df["0_founders_number"].replace({"4+": "4", "Personne morale": None})
+
     print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
 
     # Run all three test families

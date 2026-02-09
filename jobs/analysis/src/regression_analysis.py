@@ -77,6 +77,9 @@ def load_and_prepare() -> pd.DataFrame:
     """Load dataset and prepare analysis-ready DataFrame."""
     df = pd.read_csv(DATA_PATH, low_memory=False)
 
+    # Clean non-numeric values in 0_founders_number (e.g., '4+', 'Personne morale')
+    df["0_founders_number"] = df["0_founders_number"].replace({"4+": "4", "Personne morale": None})
+
     # Convert targets and numeric predictors
     for col in ["target_delta_1st_round", "target_total_funding", "target_rounds"] + NUMERIC_PREDICTORS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
