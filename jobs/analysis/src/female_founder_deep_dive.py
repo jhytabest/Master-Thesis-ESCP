@@ -23,7 +23,6 @@ from pathlib import Path
 from textwrap import dedent
 
 import numpy as np
-np.random.seed(42)  # Reproducibility
 import pandas as pd
 from scipy import stats as sp_stats
 import statsmodels.api as sm
