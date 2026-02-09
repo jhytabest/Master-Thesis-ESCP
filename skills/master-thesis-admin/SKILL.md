@@ -8,13 +8,13 @@ description: Unified administration for the Master-Thesis-ESCP repository. Use w
 Use the repository CLI as the control plane:
 
 ```bash
-python /Users/sebastienmichel/Developer/Master-Thesis-ESCP/tools/repo_admin.py --help
+python <repo_root>/tools/repo_admin.py --help
 ```
 
 Prefer this wrapper for reusable calls:
 
 ```bash
-/Users/sebastienmichel/Developer/Master-Thesis-ESCP/skills/master-thesis-admin/scripts/run_admin.sh status
+<repo_root>/skills/master-thesis-admin/scripts/run_admin.sh status
 ```
 
 ## Core commands

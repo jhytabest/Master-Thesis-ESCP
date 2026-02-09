@@ -77,7 +77,7 @@ def _python_module_spec(
     if src_dir is not None:
         existing = os.getenv("PYTHONPATH", "")
         src = str(src_dir)
-        env = {"PYTHONPATH": f"{src}:{existing}" if existing else src}
+        env = {"PYTHONPATH": f"{src}{os.pathsep}{existing}" if existing else src}
     return CommandSpec(cmd=[python_exec, "-m", module, *args], cwd=cwd, env=env)
 
 
