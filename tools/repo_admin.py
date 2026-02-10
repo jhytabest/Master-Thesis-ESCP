@@ -681,13 +681,16 @@ def _upsert_paper(
             record[key] = record.get(key) or work.get(key)
         for key in ["host_venue", "open_access"]:
             record[key] = record.get(key) or work.get(key) or {}
-        for key in ["authorships", "concepts", "related_works"]:
+        for key in ["authorships", "concepts"]:
             if work.get(key):
                 record[key] = work.get(key)
         if incoming_authors:
             record["authors"] = list(dict.fromkeys([*(record.get("authors") or []), *incoming_authors]))
         if incoming_concepts:
             record["concept_names"] = list(dict.fromkeys([*(record.get("concept_names") or []), *incoming_concepts]))
+        incoming_related = work.get("related_works") or []
+        if incoming_related:
+            record["related_works"] = list(dict.fromkeys([*(record.get("related_works") or []), *incoming_related]))
         if incoming_refs:
             record["referenced_works"] = list(dict.fromkeys([*(record.get("referenced_works") or []), *incoming_refs]))
         record["cited_by_count"] = max(int(record.get("cited_by_count") or 0), incoming_cited_by)
@@ -2085,6 +2088,8 @@ def _build_research_snapshot_markdown(state: dict[str, list[dict[str, Any]]], sh
         m = re.search(r"New relationships: (\d+)", previous_snapshot)
         if m:
             prev_links = int(m.group(1))
+        # NOTE: this parsing is intentionally string-based and therefore brittle if gap label text changes.
+        # Keep labels stable, or migrate snapshots to include structured metadata for robust delta parsing.
         prev_gaps = previous_snapshot.count("- Thin direct support:") + previous_snapshot.count("- No direct challenge/refutation:") + previous_snapshot.count("- No France/deeptech contextualization:")
     lines.append(f"- Added: {len(papers) - prev_papers} papers")
     lines.append(f"- New relationships: {len(links) - prev_links}")
