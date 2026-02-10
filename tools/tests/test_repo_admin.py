@@ -135,6 +135,12 @@ class RepoAdminCliTests(unittest.TestCase):
         self.assertTrue(args.latest)
         self.assertTrue(args.rebuild_sqlite)
 
+    def test_parser_research_snapshot(self) -> None:
+        parser = repo_admin.build_parser()
+        args = parser.parse_args(["research", "snapshot"])
+        self.assertEqual(args.command, "research")
+        self.assertEqual(args.research_cmd, "snapshot")
+
     def test_parser_research_add_edge(self) -> None:
         parser = repo_admin.build_parser()
         args = parser.parse_args(
@@ -204,16 +210,19 @@ class RepoAdminCliTests(unittest.TestCase):
             report_path="/tmp/openalex_run-1.json",
             run_id="run-1",
             link_relation="supports",
-            max_dependencies_per_paper=5,
+            max_dependencies_per_paper=0,
+            min_citations=0,
+            mailto=None,
+            northstar_sha="abc123",
         )
         self.assertEqual(created["claims"], 1)
         self.assertEqual(created["papers"], 2)
         self.assertEqual(created["links"], 2)
-        self.assertGreaterEqual(created["edges"], 2)  # cites + co_supports_claim
-        self.assertEqual(created["dependencies"], 1)
+        self.assertGreaterEqual(created["edges"], 1)
+        self.assertEqual(created["dependencies"], 0)
         self.assertEqual(len(state["claims"]), 1)
         self.assertEqual(len(state["claim_paper_links"]), 2)
-        self.assertTrue(any(item["paper_id"] == "W999" and item["is_placeholder"] for item in state["papers"]))
+        self.assertFalse(any(item.get("is_placeholder") for item in state["papers"]))
         self.assertTrue(any(item["paper_id"] == "W123" and item["quality_tier"] == "emerging" for item in state["papers"]))
 
     def test_research_overview_markdown_contains_sections(self) -> None:
@@ -249,6 +258,24 @@ class RepoAdminCliTests(unittest.TestCase):
             )
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0], second)
+
+    def test_quality_gate_blocks_low_citation_non_exception(self) -> None:
+        work = {
+            "title": "Generic startup paper",
+            "source": "Journal of Startup Studies",
+            "cited_by_count": 5,
+            "publication_year": 2018,
+            "type": "article",
+            "host_venue": {"type": "journal"},
+        }
+        self.assertFalse(repo_admin._passes_quality_gate(work, "generic claim", min_citations=50, now_year=2026))
+
+    def test_relationship_classifier_detects_methodological(self) -> None:
+        rel = repo_admin._classify_claim_paper_relation(
+            "MBA founders raise more funding",
+            {"title": "Heckman selection regression in VC studies", "abstract": "difference-in-differences design", "concept_names": []},
+        )
+        self.assertEqual(rel, "methodological")
 
 
 if __name__ == "__main__":
