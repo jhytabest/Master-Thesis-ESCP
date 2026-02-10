@@ -40,6 +40,7 @@ class RepoAdminCliTests(unittest.TestCase):
         self.assertIn("--model", spec.cmd)
         self.assertIn("gemini-3-flash-preview", spec.cmd)
         self.assertIn("PYTHONPATH", spec.env)
+        self.assertIn("LOCAL_STORAGE_ROOT", spec.env)
 
     def test_pipeline_command_optional_flags(self) -> None:
         args = Namespace(
@@ -56,6 +57,7 @@ class RepoAdminCliTests(unittest.TestCase):
         self.assertIn("bundle-001", spec.cmd)
         self.assertIn("--run_id", spec.cmd)
         self.assertIn("run-001", spec.cmd)
+        self.assertIn("LOCAL_STORAGE_ROOT", spec.env)
 
     def test_parser_worker_typecheck_install(self) -> None:
         parser = repo_admin.build_parser()
@@ -71,6 +73,58 @@ class RepoAdminCliTests(unittest.TestCase):
         self.assertEqual(args.analysis_cmd, "run")
         self.assertEqual(args.step, "regression")
         self.assertTrue(args.dry_run)
+
+    def test_parser_local_register_version(self) -> None:
+        parser = repo_admin.build_parser()
+        args = parser.parse_args(["local", "register-version", "--version-id", "local-main"])
+        self.assertEqual(args.command, "local")
+        self.assertEqual(args.local_cmd, "register-version")
+        self.assertEqual(args.version_id, "local-main")
+
+    def test_parser_analysis_literature(self) -> None:
+        parser = repo_admin.build_parser()
+        args = parser.parse_args(
+            [
+                "analysis",
+                "literature",
+                "--finding-source",
+                "NORTHSTAR.md",
+                "--max-findings",
+                "3",
+                "--works-per-finding",
+                "2",
+                "--dry-run",
+            ]
+        )
+        self.assertEqual(args.command, "analysis")
+        self.assertEqual(args.analysis_cmd, "literature")
+        self.assertEqual(args.finding_source, ["NORTHSTAR.md"])
+        self.assertEqual(args.max_findings, 3)
+        self.assertEqual(args.works_per_finding, 2)
+        self.assertTrue(args.dry_run)
+
+    def test_extract_findings_from_markdown(self) -> None:
+        content = """
+# Report
+## Key Findings
+- MBA founders raise more funding.
+- Female founder effect is borderline.
+| Finding | Strength |
+|---|---|
+| Founder count predicts funding | Moderate |
+"""
+        findings = repo_admin._extract_findings_from_markdown(content, source_name="sample.md")
+        finding_texts = [item["finding"] for item in findings]
+        self.assertIn("MBA founders raise more funding.", finding_texts)
+        self.assertIn("Female founder effect is borderline.", finding_texts)
+        self.assertIn("Founder count predicts funding", finding_texts)
+
+    def test_derive_openalex_query_adds_domain_terms(self) -> None:
+        query = repo_admin._derive_openalex_query("MBA → more funding & rounds")
+        self.assertNotIn("→", query)
+        self.assertIn("startup funding", query)
+        self.assertIn("venture capital", query)
+        self.assertIn("founder human capital", query)
 
 
 if __name__ == "__main__":

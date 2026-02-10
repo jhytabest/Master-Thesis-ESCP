@@ -2,20 +2,25 @@ import argparse
 import io
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-import boto3
 import pandas as pd
+
+try:
+  import boto3
+except Exception:  # pragma: no cover - optional in local mode
+  boto3 = None
 
 from mapping.utils import (
   build_s3_client,
   download_bytes,
-  env_or_error,
   list_keys,
   normalize_raw_value,
   now_iso,
+  resolve_bucket_name,
   sha256_hex,
   upload_bytes
 )
@@ -66,6 +71,23 @@ def resolve_proposal_keys(
 def register_mapping_bundle(payload: Dict[str, Any]) -> None:
   base = os.getenv("WORKER_API_BASE")
   token = os.getenv("WORKER_API_TOKEN")
+
+  local_root = os.getenv("LOCAL_STORAGE_ROOT")
+  if local_root and (not base or not token):
+    root = Path(local_root).expanduser().resolve()
+    meta_path = root / "meta" / "mapping_bundles.json"
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    records: List[Dict[str, Any]] = []
+    if meta_path.exists():
+      records = json.loads(meta_path.read_text(encoding="utf-8"))
+      if not isinstance(records, list):
+        records = []
+    records = [item for item in records if item.get("mapping_bundle_id") != payload.get("mapping_bundle_id")]
+    records.append(payload)
+    meta_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    log(f"register_mapping_bundle local metadata updated path={meta_path}")
+    return
+
   if not base or not token:
     log("register_mapping_bundle skipped (missing WORKER_API_BASE or WORKER_API_TOKEN)")
     return
@@ -95,12 +117,13 @@ def main() -> None:
   parser.add_argument("--proposal_path")
   parser.add_argument("--proposal_prefix")
   parser.add_argument("--output_bundle_id", required=True)
+  parser.add_argument("--auto_approve_all", action="store_true")
   parser.add_argument("--approved_by")
   parser.add_argument("--approved_at")
   parser.add_argument("--output_prefix")
   args = parser.parse_args()
 
-  bucket = env_or_error("R2_BUCKET")
+  bucket = resolve_bucket_name()
   client = build_s3_client()
   log(f"start output_bundle_id={args.output_bundle_id} proposal_path={args.proposal_path} proposal_prefix={args.proposal_prefix}")
 
@@ -143,6 +166,8 @@ def main() -> None:
       raise RuntimeError(f"Proposal CSV {csv_key} missing required columns")
 
     df["approved_flag"] = df["approved"].apply(parse_approved_flag)
+    if args.auto_approve_all:
+      df["approved_flag"] = True
     approved_rows = df[df["approved_flag"]].copy()
     log(f"approved rows={len(approved_rows)} total rows={len(df)} action={action}")
 
@@ -151,7 +176,7 @@ def main() -> None:
 
     if approved_rows["raw_value"].isna().any():
       raise RuntimeError(f"Approved rows missing raw_value in {csv_key}")
-    if approved_rows["normalized_value"].isna().any():
+    if action == "map_values" and approved_rows["normalized_value"].isna().any():
       raise RuntimeError(f"Approved rows missing normalized_value in {csv_key}")
 
     duplicates = approved_rows["raw_value"].duplicated()
