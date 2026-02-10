@@ -4,6 +4,7 @@ import importlib.util
 from argparse import Namespace
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
@@ -125,6 +126,129 @@ class RepoAdminCliTests(unittest.TestCase):
         self.assertIn("startup funding", query)
         self.assertIn("venture capital", query)
         self.assertIn("founder human capital", query)
+
+    def test_parser_research_ingest_latest(self) -> None:
+        parser = repo_admin.build_parser()
+        args = parser.parse_args(["research", "ingest-openalex", "--latest"])
+        self.assertEqual(args.command, "research")
+        self.assertEqual(args.research_cmd, "ingest-openalex")
+        self.assertTrue(args.latest)
+        self.assertTrue(args.rebuild_sqlite)
+
+    def test_parser_research_add_edge(self) -> None:
+        parser = repo_admin.build_parser()
+        args = parser.parse_args(
+            [
+                "research",
+                "add-edge",
+                "--from-paper-id",
+                "W1",
+                "--to-paper-id",
+                "W2",
+                "--relation",
+                "extends",
+            ]
+        )
+        self.assertEqual(args.command, "research")
+        self.assertEqual(args.research_cmd, "add-edge")
+        self.assertEqual(args.from_paper_id, "W1")
+        self.assertEqual(args.to_paper_id, "W2")
+        self.assertEqual(args.relation, "extends")
+
+    def test_ingest_openalex_payload_builds_links_and_dependencies(self) -> None:
+        state = {
+            "papers": [],
+            "claims": [],
+            "claim_paper_links": [],
+            "paper_edges": [],
+            "dependencies": [],
+            "ingestions": [],
+        }
+        payload = {
+            "run_id": "run-1",
+            "items": [
+                {
+                    "source": "NORTHSTAR.md",
+                    "finding": "MBA founders raise more funding",
+                    "query": "mba startup funding",
+                    "works": [
+                        {
+                            "id": "https://openalex.org/W123",
+                            "title": "Paper A",
+                            "publication_year": 2020,
+                            "cited_by_count": 10,
+                            "doi": "https://doi.org/example-a",
+                            "source": "Journal A",
+                            "authors": ["Author A"],
+                            "concepts": ["Venture capital"],
+                            "referenced_works": ["https://openalex.org/W999"],
+                        },
+                        {
+                            "id": "https://openalex.org/W124",
+                            "title": "Paper B",
+                            "publication_year": 2021,
+                            "cited_by_count": 7,
+                            "doi": "https://doi.org/example-b",
+                            "source": "Journal B",
+                            "authors": ["Author B"],
+                            "concepts": ["Startups"],
+                            "referenced_works": [],
+                        },
+                    ],
+                }
+            ],
+        }
+        created = repo_admin._ingest_openalex_report_payload(
+            state=state,
+            payload=payload,
+            report_path="/tmp/openalex_run-1.json",
+            run_id="run-1",
+            link_relation="supports",
+            max_dependencies_per_paper=5,
+        )
+        self.assertEqual(created["claims"], 1)
+        self.assertEqual(created["papers"], 2)
+        self.assertEqual(created["links"], 2)
+        self.assertGreaterEqual(created["edges"], 2)  # cites + co_supports_claim
+        self.assertEqual(created["dependencies"], 1)
+        self.assertEqual(len(state["claims"]), 1)
+        self.assertEqual(len(state["claim_paper_links"]), 2)
+        self.assertTrue(any(item["paper_id"] == "W999" and item["is_placeholder"] for item in state["papers"]))
+        self.assertTrue(any(item["paper_id"] == "W123" and item["quality_tier"] == "emerging" for item in state["papers"]))
+
+    def test_research_overview_markdown_contains_sections(self) -> None:
+        state = {
+            "papers": [{"paper_id": "W1", "title": "Paper One", "cited_by_count": 5, "publication_year": 2020}],
+            "claims": [{"claim_id": "claim_1", "claim_text": "A claim"}],
+            "claim_paper_links": [{"claim_id": "claim_1", "paper_id": "W1"}],
+            "paper_edges": [{"relation": "co_supports_claim", "from_paper_id": "W1", "to_paper_id": "W2"}],
+            "dependencies": [{"paper_id": "W1", "depends_on_paper_id": "W2", "reason": "openalex_referenced_work"}],
+            "ingestions": [],
+        }
+        md = repo_admin._build_research_overview_markdown(state, generated_at="2026-02-10T00:00:00Z")
+        self.assertIn("# Thesis Academic Foundation Overview", md)
+        self.assertIn("## Claim Coverage", md)
+        self.assertIn("## Quality Tiers", md)
+        self.assertIn("## Interaction Breakdown", md)
+        self.assertIn("## Deep Reading Paths (sample)", md)
+
+    def test_resolve_openalex_report_paths_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            reports = root / "reports" / "literature"
+            reports.mkdir(parents=True)
+            first = reports / "openalex_first.json"
+            second = reports / "openalex_second.json"
+            first.write_text("{}", encoding="utf-8")
+            second.write_text("{}", encoding="utf-8")
+
+            resolved = repo_admin._resolve_openalex_report_paths(
+                local_root=root,
+                report_paths=None,
+                latest=True,
+            )
+            self.assertEqual(len(resolved), 1)
+            self.assertEqual(resolved[0], second)
 
 
 if __name__ == "__main__":
