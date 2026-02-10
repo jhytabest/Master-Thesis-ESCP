@@ -1,6 +1,6 @@
 # NORTHSTAR — Research Vision & Priorities
 
-**Last updated:** 2026-02-09 | **CTO:** Shober
+**Last updated:** 2026-02-10 | **CTO:** ShoberclawCTO
 
 ---
 
@@ -91,6 +91,20 @@ The current finding is fragile. The OLS says -53% funding, the PSM says -9.3M€
 2. **Data & Methods:** Sample description, variable definitions, missingness analysis, model specifications
 3. **Results:** Descriptive → Bivariate → Multivariate (with industry FE) → Female founder deep-dive → Robustness
 4. **Discussion:** MBA as strongest predictor (why?), gender gap (cautious interpretation), model limitations, French deeptech ecosystem specifics
+
+---
+
+## Decision Gate (requires human input)
+
+### Open strategic decision — model track for thesis core results
+We need to lock one of two execution tracks before finalizing the next analysis sprint:
+
+- **Option A (Causal-priority track):** Industry fixed effects + missingness/selection correction (Heckman or two-stage selection) as mandatory core models before writing narrative.
+- **Option B (Delivery-priority track):** Freeze current baseline + robustness + concise limitations, and defer full selection modeling to appendix/future work.
+
+**CTO recommendation:** **Option A**. Given ~65% missingness on key funding outcomes, Option B risks a fragile core claim and weak examiner confidence.
+
+**Status:** Blocked pending @jhytabest decision. Do not finalize the thesis results narrative until this is resolved.
 
 ---
 
