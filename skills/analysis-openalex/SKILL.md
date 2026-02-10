@@ -27,8 +27,9 @@ Or run the full curation loop:
 
 - Confirm analysis markdown outputs exist (`NORTHSTAR.md` and/or `jobs/analysis/output/*.md`).
 - Run `analysis literature` to extract findings and query OpenAlex.
-- Ingest results into the thesis foundation DB with `research ingest-openalex`.
-- Generate a clean curation snapshot with `research overview`.
+- Ingest results into the thesis foundation DB with `research ingest-openalex` (quality-filtered + relationship classification).
+- Generate a NORTHSTAR-linked snapshot with `research snapshot`.
+- Generate a clean curation summary with `research overview`.
 
 ## Command patterns
 
@@ -38,8 +39,11 @@ Or run the full curation loop:
   - `analysis literature --finding-source NORTHSTAR.md --finding-source jobs/analysis/output/regression_report.md`
 - Query planning only:
   - `analysis literature --dry-run`
-- Foundation ingestion:
-  - `research ingest-openalex --latest`
+- Foundation ingestion with quality gate + richer metadata:
+  - `research ingest-openalex --latest --min-citations 50`
+- Snapshot generation:
+  - `research snapshot`
+- Overview:
   - `research overview`
 
 ## Outputs
@@ -55,3 +59,5 @@ Or run the full curation loop:
 - Prefer `--dry-run` first when changing source selection logic.
 - Keep outputs local and commit them if they are part of a reproducible research checkpoint.
 - Use `OPENALEX_EMAIL` env var when available for OpenAlex polite pool routing.
+- `research ingest-openalex` now supports `--min-citations` (default 50) and relationship classes: `supports`, `challenges`, `contextualizes`, `methodological`, `level-2`.
+- `research snapshot` can be re-run independently from existing local JSONL state (no fresh OpenAlex queries required).

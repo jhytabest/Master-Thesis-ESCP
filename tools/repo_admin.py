@@ -265,6 +265,78 @@ def _derive_openalex_query(finding: str) -> str:
     return f"{finding_query} {suffix}".strip()
 
 
+def _decode_abstract(inverted_index: dict[str, list[int]] | None) -> str | None:
+    if not isinstance(inverted_index, dict) or not inverted_index:
+        return None
+    token_positions: dict[int, str] = {}
+    for token, positions in inverted_index.items():
+        if not isinstance(positions, list):
+            continue
+        for pos in positions:
+            if isinstance(pos, int):
+                token_positions[pos] = token
+    if not token_positions:
+        return None
+    return " ".join(token_positions[idx] for idx in sorted(token_positions))
+
+
+def _openalex_work_to_record(work: dict[str, Any]) -> dict[str, Any]:
+    source_info = (work.get("primary_location") or {}).get("source") or {}
+    host_venue = {
+        "name": source_info.get("display_name"),
+        "issn_l": source_info.get("issn_l"),
+        "issn": source_info.get("issn") or [],
+        "is_in_doaj": source_info.get("is_in_doaj"),
+        "type": source_info.get("type"),
+    }
+
+    authorships: list[dict[str, Any]] = []
+    authors: list[str] = []
+    for authorship in work.get("authorships", [])[:12]:
+        author = authorship.get("author") or {}
+        institutions = authorship.get("institutions") or []
+        institution_names = [inst.get("display_name") for inst in institutions if inst.get("display_name")]
+        author_name = author.get("display_name")
+        if author_name:
+            authors.append(author_name)
+        authorships.append(
+            {
+                "author": author_name,
+                "author_id": author.get("id"),
+                "institutions": institution_names,
+            }
+        )
+
+    concepts: list[dict[str, Any]] = []
+    concept_names: list[str] = []
+    for concept in work.get("concepts", [])[:15]:
+        concept_name = concept.get("display_name")
+        if concept_name:
+            concept_names.append(concept_name)
+        concepts.append({"name": concept_name, "score": concept.get("score")})
+
+    return {
+        "id": work.get("id"),
+        "title": work.get("display_name"),
+        "publication_year": work.get("publication_year"),
+        "publication_date": work.get("publication_date"),
+        "cited_by_count": work.get("cited_by_count"),
+        "doi": work.get("doi"),
+        "source": host_venue.get("name"),
+        "host_venue": host_venue,
+        "authors": authors,
+        "authorships": authorships,
+        "concepts": concepts,
+        "concept_names": concept_names,
+        "referenced_works": (work.get("referenced_works") or [])[:60],
+        "related_works": (work.get("related_works") or [])[:40],
+        "openalex_url": work.get("id"),
+        "open_access": work.get("open_access") or {},
+        "type": work.get("type"),
+        "abstract": _decode_abstract(work.get("abstract_inverted_index")),
+    }
+
+
 def _openalex_search(query: str, per_page: int, mailto: str | None, from_year: int | None) -> list[dict[str, Any]]:
     params: dict[str, str] = {
         "search": query,
@@ -282,35 +354,25 @@ def _openalex_search(query: str, per_page: int, mailto: str | None, from_year: i
     with urlrequest.urlopen(req, timeout=40) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
-    works: list[dict[str, Any]] = []
-    for work in payload.get("results", []):
-        source_info = (work.get("primary_location") or {}).get("source") or {}
-        authors = []
-        for authorship in work.get("authorships", [])[:5]:
-            author_name = (authorship.get("author") or {}).get("display_name")
-            if author_name:
-                authors.append(author_name)
-        concepts = []
-        for concept in work.get("concepts", [])[:8]:
-            concept_name = concept.get("display_name")
-            if concept_name:
-                concepts.append(concept_name)
+    return [_openalex_work_to_record(work) for work in payload.get("results", [])]
 
-        works.append(
-            {
-                "id": work.get("id"),
-                "title": work.get("display_name"),
-                "publication_year": work.get("publication_year"),
-                "cited_by_count": work.get("cited_by_count"),
-                "doi": work.get("doi"),
-                "source": source_info.get("display_name"),
-                "authors": authors,
-                "concepts": concepts,
-                "referenced_works": (work.get("referenced_works") or [])[:40],
-                "openalex_url": work.get("id"),
-            }
-        )
-    return works
+
+def _openalex_fetch_work(openalex_id: str, mailto: str | None = None) -> dict[str, Any] | None:
+    if not openalex_id:
+        return None
+    token = openalex_id.rstrip("/").split("/")[-1]
+    if not token:
+        return None
+    base = f"https://api.openalex.org/works/{token}"
+    if mailto:
+        base = f"{base}?{urlparse.urlencode({'mailto': mailto})}"
+    req = urlrequest.Request(base, method="GET", headers={"User-Agent": "master-thesis-admin-cli/1.0"})
+    try:
+        with urlrequest.urlopen(req, timeout=40) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return _openalex_work_to_record(payload)
+    except (urlerror.HTTPError, urlerror.URLError, TimeoutError):
+        return None
 
 
 def _build_literature_markdown(results: dict[str, Any]) -> str:
@@ -351,6 +413,14 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _northstar_git_sha() -> str:
+    try:
+        out = subprocess.check_output(["git", "log", "-n", "1", "--pretty=format:%H", "--", str(NORTHSTAR_PATH)], cwd=REPO_ROOT)
+        return out.decode("utf-8").strip()[:12]
+    except Exception:
+        return "unknown"
+
+
 def _stable_id(prefix: str, *parts: str) -> str:
     normalized_parts = [_normalize_text(part).lower() for part in parts if part]
     payload = "|".join(normalized_parts)
@@ -369,11 +439,92 @@ def _paper_id_from_openalex_id(openalex_id: str | None) -> str:
 def _paper_quality_tier(cited_by_count: int) -> str:
     if cited_by_count >= 500:
         return "foundational"
-    if cited_by_count >= 150:
+    if cited_by_count >= 100:
         return "high"
-    if cited_by_count >= 40:
-        return "medium"
+    if cited_by_count >= 50:
+        return "established"
     return "emerging"
+
+
+def _paper_has_required_metadata(work: dict[str, Any]) -> bool:
+    return bool(work.get("title") and work.get("source") and work.get("cited_by_count") is not None)
+
+
+def _is_peer_reviewed_source(work: dict[str, Any]) -> bool:
+    venue_type = ((work.get("host_venue") or {}).get("type") or "").lower()
+    source = (work.get("source") or "").lower()
+    return venue_type in {"journal", "conference"} or "journal" in source
+
+
+def _is_working_paper(work: dict[str, Any]) -> bool:
+    source = (work.get("source") or "").lower()
+    work_type = (work.get("type") or "").lower()
+    return "working paper" in source or work_type in {"working-paper", "preprint"}
+
+
+def _is_top_working_paper_institution(work: dict[str, Any]) -> bool:
+    allowed = ("nber", "cepr", "harvard business school", "hbs")
+    source = (work.get("source") or "").lower()
+    affiliations = " ".join(
+        inst.lower()
+        for au in (work.get("authorships") or [])
+        for inst in (au.get("institutions") or [])
+        if isinstance(inst, str)
+    )
+    combined = f"{source} {affiliations}"
+    return any(token in combined for token in allowed)
+
+
+def _is_france_or_deeptech_specific(claim_text: str, work: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        [
+            claim_text or "",
+            work.get("title") or "",
+            work.get("abstract") or "",
+            " ".join(work.get("concept_names") or []),
+        ]
+    ).lower()
+    markers = ["france", "french", "paris", "deeptech", "deep tech", "scientific founder", "technical founder", "vc"]
+    return any(marker in haystack for marker in markers)
+
+
+def _passes_quality_gate(work: dict[str, Any], claim_text: str, min_citations: int, now_year: int) -> bool:
+    if not _paper_has_required_metadata(work):
+        return False
+
+    cited = int(work.get("cited_by_count") or 0)
+    pub_year = int(work.get("publication_year") or 0)
+    age = now_year - pub_year if pub_year else 99
+    citation_threshold = min_citations
+    if age < 3:
+        citation_threshold = min(citation_threshold, 20)
+
+    france_or_deeptech = _is_france_or_deeptech_specific(claim_text, work)
+    if france_or_deeptech and _is_peer_reviewed_source(work):
+        return True
+
+    if _is_working_paper(work) and not _is_top_working_paper_institution(work):
+        return False
+
+    return cited >= citation_threshold
+
+
+def _classify_claim_paper_relation(claim_text: str, work: dict[str, Any], default: str = "supports") -> str:
+    text = " ".join(
+        [
+            claim_text or "",
+            work.get("title") or "",
+            work.get("abstract") or "",
+            " ".join(work.get("concept_names") or []),
+        ]
+    ).lower()
+    if any(token in text for token in ["however", "contradict", "null effect", "mixed evidence", "challenge"]):
+        return "challenges"
+    if any(token in text for token in ["france", "french", "deeptech", "venture capital", "ecosystem", "institutional"]):
+        return "contextualizes"
+    if any(token in text for token in ["regression", "instrumental", "difference-in-differences", "heckman", "method"]):
+        return "methodological"
+    return default
 
 
 def _research_root(local_root: Path) -> Path:
@@ -494,7 +645,7 @@ def _upsert_paper(
         paper_id = _stable_id("paper", fallback)
 
     incoming_authors = work.get("authors") if isinstance(work.get("authors"), list) else []
-    incoming_concepts = work.get("concepts") if isinstance(work.get("concepts"), list) else []
+    incoming_concepts = work.get("concept_names") if isinstance(work.get("concept_names"), list) else []
     incoming_refs = work.get("referenced_works") if isinstance(work.get("referenced_works"), list) else []
     incoming_cited_by = int(work.get("cited_by_count") or 0)
 
@@ -506,10 +657,18 @@ def _upsert_paper(
             "openalex_id": openalex_id,
             "title": work.get("title"),
             "publication_year": work.get("publication_year"),
+            "publication_date": work.get("publication_date"),
             "doi": work.get("doi"),
             "source": work.get("source"),
+            "host_venue": work.get("host_venue") or {},
+            "open_access": work.get("open_access") or {},
+            "type": work.get("type"),
+            "abstract": work.get("abstract"),
             "authors": incoming_authors,
-            "concepts": incoming_concepts,
+            "authorships": work.get("authorships") or [],
+            "concepts": work.get("concepts") or [],
+            "concept_names": incoming_concepts,
+            "related_works": work.get("related_works") or [],
             "cited_by_count": incoming_cited_by,
             "quality_tier": _paper_quality_tier(incoming_cited_by),
             "referenced_works": incoming_refs,
@@ -518,23 +677,22 @@ def _upsert_paper(
             "last_seen_at": now,
         }
     else:
-        record["openalex_id"] = record.get("openalex_id") or openalex_id
-        record["title"] = record.get("title") or work.get("title")
-        record["publication_year"] = record.get("publication_year") or work.get("publication_year")
-        record["doi"] = record.get("doi") or work.get("doi")
-        record["source"] = record.get("source") or work.get("source")
+        for key in ["openalex_id", "title", "publication_year", "publication_date", "doi", "source", "type", "abstract"]:
+            record[key] = record.get(key) or work.get(key)
+        for key in ["host_venue", "open_access"]:
+            record[key] = record.get(key) or work.get(key) or {}
+        for key in ["authorships", "concepts", "related_works"]:
+            if work.get(key):
+                record[key] = work.get(key)
         if incoming_authors:
-            merged_authors = list(dict.fromkeys([*(record.get("authors") or []), *incoming_authors]))
-            record["authors"] = merged_authors
+            record["authors"] = list(dict.fromkeys([*(record.get("authors") or []), *incoming_authors]))
         if incoming_concepts:
-            merged_concepts = list(dict.fromkeys([*(record.get("concepts") or []), *incoming_concepts]))
-            record["concepts"] = merged_concepts
+            record["concept_names"] = list(dict.fromkeys([*(record.get("concept_names") or []), *incoming_concepts]))
         if incoming_refs:
-            merged_refs = list(dict.fromkeys([*(record.get("referenced_works") or []), *incoming_refs]))
-            record["referenced_works"] = merged_refs
+            record["referenced_works"] = list(dict.fromkeys([*(record.get("referenced_works") or []), *incoming_refs]))
         record["cited_by_count"] = max(int(record.get("cited_by_count") or 0), incoming_cited_by)
         record["quality_tier"] = _paper_quality_tier(int(record.get("cited_by_count") or 0))
-        record["is_placeholder"] = bool(record.get("is_placeholder")) and not bool(work.get("title"))
+        record["is_placeholder"] = False
         record["last_seen_at"] = now
 
     papers_by_id[paper_id] = record
@@ -693,8 +851,12 @@ def _ingest_openalex_report_payload(
     run_id: str,
     link_relation: str,
     max_dependencies_per_paper: int,
+    min_citations: int,
+    mailto: str | None,
+    northstar_sha: str,
 ) -> dict[str, int]:
     now = _utcnow_iso()
+    now_year = datetime.now(timezone.utc).year
     papers_by_id = {item["paper_id"]: item for item in state["papers"] if item.get("paper_id")}
     claims_by_id = {item["claim_id"]: item for item in state["claims"] if item.get("claim_id")}
     links_by_key = {
@@ -713,14 +875,10 @@ def _ingest_openalex_report_payload(
         if item.get("paper_id") and item.get("depends_on_paper_id") and item.get("reason")
     }
 
-    created = {
-        "papers": 0,
-        "claims": 0,
-        "links": 0,
-        "edges": 0,
-        "dependencies": 0,
-        "placeholders": 0,
-    }
+    created = {"papers": 0, "claims": 0, "links": 0, "edges": 0, "dependencies": 0, "placeholders": 0}
+
+    # purge legacy placeholders
+    papers_by_id = {k: v for k, v in papers_by_id.items() if not v.get("is_placeholder") and _paper_has_required_metadata(v)}
 
     for item in payload.get("items", []):
         finding = _strip_markdown(str(item.get("finding") or ""))
@@ -737,16 +895,20 @@ def _ingest_openalex_report_payload(
         for work in item.get("works", []):
             if not isinstance(work, dict):
                 continue
+            if not _passes_quality_gate(work=work, claim_text=finding, min_citations=min_citations, now_year=now_year):
+                continue
+
             paper_id, paper_created = _upsert_paper(papers_by_id, work=work, now=now)
             if paper_created:
                 created["papers"] += 1
             claim_paper_ids.append(paper_id)
 
+            relation = _classify_claim_paper_relation(finding, work, default=link_relation)
             link_created = _upsert_claim_link(
                 links_by_key=links_by_key,
                 claim_id=claim_id,
                 paper_id=paper_id,
-                relation=link_relation,
+                relation=relation,
                 run_id=run_id,
                 evidence_source=source,
                 query=query,
@@ -757,20 +919,19 @@ def _ingest_openalex_report_payload(
 
             referenced = [ref for ref in (work.get("referenced_works") or []) if isinstance(ref, str)]
             for ref in referenced[:max(0, max_dependencies_per_paper)]:
-                depends_on_paper_id, placeholder_created = _ensure_placeholder_paper(
-                    papers_by_id=papers_by_id,
-                    openalex_id=ref,
-                    now=now,
-                )
-                if placeholder_created:
-                    created["placeholders"] += 1
+                ref_work = _openalex_fetch_work(ref, mailto=mailto)
+                if not ref_work or not _paper_has_required_metadata(ref_work):
+                    continue
+                depends_on_paper_id, dep_paper_created = _upsert_paper(papers_by_id=papers_by_id, work=ref_work, now=now)
+                if dep_paper_created:
+                    created["papers"] += 1
 
                 dep_created = _upsert_dependency(
                     dependencies_by_key=dependencies_by_key,
                     paper_id=paper_id,
                     depends_on_paper_id=depends_on_paper_id,
                     reason="openalex_referenced_work",
-                    depth=1,
+                    depth=2,
                     provenance="auto_openalex",
                     run_id=run_id,
                     now=now,
@@ -792,7 +953,19 @@ def _ingest_openalex_report_payload(
                 if edge_created:
                     created["edges"] += 1
 
-        # Undirected claim-level interaction edges to show related papers per finding.
+                lvl2_created = _upsert_claim_link(
+                    links_by_key=links_by_key,
+                    claim_id=claim_id,
+                    paper_id=depends_on_paper_id,
+                    relation="level-2",
+                    run_id=run_id,
+                    evidence_source=source,
+                    query=query,
+                    now=now,
+                )
+                if lvl2_created:
+                    created["links"] += 1
+
         unique_claim_papers = sorted(set(claim_paper_ids))
         for left, right in itertools.combinations(unique_claim_papers, 2):
             edge_created = _upsert_paper_edge(
@@ -811,18 +984,9 @@ def _ingest_openalex_report_payload(
 
     state["papers"] = sorted(papers_by_id.values(), key=lambda item: item["paper_id"])
     state["claims"] = sorted(claims_by_id.values(), key=lambda item: item["claim_id"])
-    state["claim_paper_links"] = sorted(
-        links_by_key.values(),
-        key=lambda item: (item["claim_id"], item["paper_id"], item["relation"]),
-    )
-    state["paper_edges"] = sorted(
-        edges_by_key.values(),
-        key=lambda item: (item["from_paper_id"], item["to_paper_id"], item["relation"], item.get("claim_id") or ""),
-    )
-    state["dependencies"] = sorted(
-        dependencies_by_key.values(),
-        key=lambda item: (item["paper_id"], item["depends_on_paper_id"], item["reason"]),
-    )
+    state["claim_paper_links"] = sorted(links_by_key.values(), key=lambda item: (item["claim_id"], item["paper_id"], item["relation"]))
+    state["paper_edges"] = sorted(edges_by_key.values(), key=lambda item: (item["from_paper_id"], item["to_paper_id"], item["relation"], item.get("claim_id") or ""))
+    state["dependencies"] = sorted(dependencies_by_key.values(), key=lambda item: (item["paper_id"], item["depends_on_paper_id"], item["reason"]))
 
     state["ingestions"].append(
         {
@@ -830,6 +994,7 @@ def _ingest_openalex_report_payload(
             "run_id": run_id,
             "report_path": report_path,
             "ingested_at": now,
+            "northstar_sha": northstar_sha,
             "new_papers": created["papers"],
             "new_claims": created["claims"],
             "new_links": created["links"],
@@ -1101,7 +1266,7 @@ def _build_research_overview_markdown(state: dict[str, list[dict[str, Any]]], ge
     if not quality_counts:
         lines.append("- None.")
     else:
-        for tier in ("foundational", "high", "medium", "emerging"):
+        for tier in ("foundational", "high", "established", "emerging"):
             if tier in quality_counts:
                 lines.append(f"- {tier}: {quality_counts[tier]}")
     lines.append("")
@@ -1668,6 +1833,7 @@ def cmd_research_ingest_openalex(args: argparse.Namespace) -> int:
         return 2
 
     total = {"papers": 0, "claims": 0, "links": 0, "edges": 0, "dependencies": 0, "placeholders": 0}
+    northstar_sha = _northstar_git_sha()
     for report_path in report_paths:
         payload = json.loads(report_path.read_text(encoding="utf-8"))
         run_id = str(payload.get("run_id") or _extract_run_id_from_report_path(report_path))
@@ -1678,6 +1844,9 @@ def cmd_research_ingest_openalex(args: argparse.Namespace) -> int:
             run_id=run_id,
             link_relation=args.link_relation,
             max_dependencies_per_paper=args.max_dependencies_per_paper,
+            min_citations=args.min_citations,
+            mailto=args.mailto,
+            northstar_sha=northstar_sha,
         )
         for key in total:
             total[key] += created[key]
@@ -1850,6 +2019,96 @@ def cmd_research_overview(args: argparse.Namespace) -> int:
     print(f"claim_paper_links={len(state['claim_paper_links'])}")
     print(f"paper_edges={len(state['paper_edges'])}")
     print(f"dependencies={len(state['dependencies'])}")
+    return 0
+
+
+def _paper_label(paper: dict[str, Any]) -> str:
+    return paper.get("title") or paper.get("paper_id") or "unknown"
+
+
+def _build_research_snapshot_markdown(state: dict[str, list[dict[str, Any]]], sha: str, generated_date: str, previous_snapshot: str | None) -> tuple[str, dict[str, int]]:
+    papers = state["papers"]
+    claims = state["claims"]
+    links = state["claim_paper_links"]
+    papers_by_id = {p.get("paper_id"): p for p in papers}
+
+    tier_counts: dict[str, int] = {}
+    for p in papers:
+        tier = p.get("quality_tier") or "emerging"
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+    by_claim: dict[str, dict[str, list[str]]] = {}
+    for link in links:
+        by_claim.setdefault(link.get("claim_id"), {}).setdefault(link.get("relation") or "supports", []).append(link.get("paper_id"))
+
+    lines = ["# Research Foundation Snapshot", f"NORTHSTAR SHA: {sha}", f"Date: {generated_date}", ""]
+    lines.append(
+        "Library: {} papers ({} foundational, {} high, {} established, {} emerging)".format(
+            len(papers), tier_counts.get("foundational", 0), tier_counts.get("high", 0), tier_counts.get("established", 0), tier_counts.get("emerging", 0)
+        )
+    )
+    lines.append("")
+    lines.append("## Claim Map")
+    for claim in claims:
+        claim_id = claim.get("claim_id")
+        lines.append(f"### Claim: \"{claim.get('claim_text')}\"")
+        rel_map = by_claim.get(claim_id, {})
+        for rel, label in [("supports", "Supports"), ("challenges", "Challenges"), ("contextualizes", "Contextualizes"), ("methodological", "Method precedent"), ("level-2", "Level-2")]:
+            paper_ids = rel_map.get(rel, [])
+            text = ", ".join(_paper_label(papers_by_id.get(pid, {"paper_id": pid})) for pid in paper_ids) if paper_ids else "none"
+            lines.append(f"**{label}:** {text}")
+        lines.append("")
+
+    lines.append("## Gap Analysis")
+    gap_count = 0
+    for claim in claims:
+        rel_map = by_claim.get(claim.get("claim_id"), {})
+        if len(rel_map.get("supports", [])) < 2:
+            lines.append(f"- Thin direct support: {claim.get('claim_text')}")
+            gap_count += 1
+        if not rel_map.get("challenges"):
+            lines.append(f"- No direct challenge/refutation: {claim.get('claim_text')}")
+            gap_count += 1
+        if not rel_map.get("contextualizes"):
+            lines.append(f"- No France/deeptech contextualization: {claim.get('claim_text')}")
+            gap_count += 1
+    if gap_count == 0:
+        lines.append("- No major gaps detected.")
+
+    lines.append("")
+    lines.append("## Delta from previous snapshot")
+    prev_papers = prev_links = prev_gaps = 0
+    if previous_snapshot:
+        m = re.search(r"Library: (\d+) papers", previous_snapshot)
+        if m:
+            prev_papers = int(m.group(1))
+        m = re.search(r"New relationships: (\d+)", previous_snapshot)
+        if m:
+            prev_links = int(m.group(1))
+        prev_gaps = previous_snapshot.count("- Thin direct support:") + previous_snapshot.count("- No direct challenge/refutation:") + previous_snapshot.count("- No France/deeptech contextualization:")
+    lines.append(f"- Added: {len(papers) - prev_papers} papers")
+    lines.append(f"- New relationships: {len(links) - prev_links}")
+    lines.append(f"- Gaps closed/opened: {prev_gaps - gap_count:+d}")
+
+    return "\n".join(lines), {"gaps": gap_count}
+
+
+def cmd_research_snapshot(args: argparse.Namespace) -> int:
+    _print_header("research snapshot")
+    local_root = _resolve_local_storage_root(args.local_root)
+    paths = _research_paths(local_root)
+    state = _load_research_state(local_root)
+    sha = _northstar_git_sha()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    snapshots_dir = paths["root"] / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(snapshots_dir.glob("snapshot_*.md"))
+    previous = existing[-1].read_text(encoding="utf-8") if existing else None
+    md, _ = _build_research_snapshot_markdown(state, sha=sha, generated_date=date_str, previous_snapshot=previous)
+    out = snapshots_dir / f"snapshot_{sha}_{date_str}.md"
+    out.write_text(md, encoding="utf-8")
+    print(f"snapshot_path={out}")
+    print(f"northstar_sha={sha}")
     return 0
 
 
@@ -2076,10 +2335,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_research_ingest.add_argument(
         "--link-relation",
         default="supports",
-        choices=["supports", "context", "method"],
-        help="Relation used for claim-paper links",
+        choices=["supports", "challenges", "contextualizes", "methodological", "level-2"],
+        help="Default relation used for claim-paper links before heuristic classification",
     )
     p_research_ingest.add_argument("--max-dependencies-per-paper", type=int, default=8)
+    p_research_ingest.add_argument("--min-citations", type=int, default=50)
+    p_research_ingest.add_argument("--mailto", default=os.getenv("OPENALEX_EMAIL"), help="Optional email for OpenAlex metadata fetches")
     p_research_ingest.add_argument("--local-root")
     p_research_ingest.add_argument(
         "--skip-rebuild-sqlite",
@@ -2126,6 +2387,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_research_overview = research_sub.add_parser("overview", help="Generate thesis foundation overview markdown")
     p_research_overview.add_argument("--local-root")
     p_research_overview.set_defaults(func=cmd_research_overview)
+
+    p_research_snapshot = research_sub.add_parser("snapshot", help="Generate NORTHSTAR-linked research snapshot markdown")
+    p_research_snapshot.add_argument("--local-root")
+    p_research_snapshot.set_defaults(func=cmd_research_snapshot)
 
     p_mapping = sub.add_parser("mapping", help="Run mapping workflow commands")
     mapping_sub = p_mapping.add_subparsers(dest="mapping_cmd", required=True)
