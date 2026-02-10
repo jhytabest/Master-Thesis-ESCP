@@ -26,6 +26,7 @@ Prefer this wrapper for reusable calls:
 - `analysis run --step {eda|correlation|regression|robustness|all}`: run thesis analysis jobs.
 - `analysis list-outputs`: list generated reports/figures/CSV files.
 - `analysis literature [--finding-source ...]`: extract findings from markdown outputs and query OpenAlex for related papers.
+- `research init|ingest-openalex|overview`: maintain a thesis foundation database (papers, claim links, interactions, dependencies).
 - `mapping propose ...`: generate mapping proposals (defaults to local heuristic mode).
 - `mapping freeze ...`: freeze approved mapping proposals into a bundle.
 - `pipeline run ...`: run the deterministic pipeline job.
@@ -41,7 +42,7 @@ Prefer this wrapper for reusable calls:
 - Local storage (`local_store/`) is enabled by default for mapping/pipeline/enrichment commands.
 - Use `--dry-run` for potentially destructive or cloud-side commands.
 - Run `doctor` before external workflows to detect missing env or dependencies.
-- Prefer sequence: `analysis run --step all` -> `analysis literature` -> `local init` -> `local register-version` -> `mapping propose` -> `mapping freeze --auto-approve-all` -> `pipeline run`.
+- Prefer sequence: `analysis run --step all` -> `analysis literature` -> `research ingest-openalex --latest` -> `research overview` -> `local init` -> `local register-version` -> `mapping propose` -> `mapping freeze --auto-approve-all` -> `pipeline run`.
 - Cloud-hosted Worker/API deployment is optional and can be deferred.
 - Expect `mapping propose` to require Vertex billing and IAM permissions in cloud mode; do not treat billing/auth failures as code defects unless repro occurs with valid credentials.
 - Prefer `doctor --component mapping` before invoking mapping, and `doctor --component ui` before launching the Streamlit console.
