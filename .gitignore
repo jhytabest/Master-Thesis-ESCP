@@ -15,8 +15,5 @@ venv/
 /dist/
 /build/
 
-# Analysis outputs
-/jobs/analysis/output/
-
 # OS
 .DS_Store

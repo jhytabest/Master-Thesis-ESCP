@@ -1,0 +1,3 @@
+interface:
+  display_name: "Analysis Literature"
+  short_description: "Link findings to OpenAlex papers"

@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -76,7 +77,39 @@ def now_iso() -> str:
   return datetime.utcnow().isoformat() + "Z"
 
 
-def build_s3_client() -> boto3.client:
+def local_storage_root() -> Optional[Path]:
+  value = os.getenv("LOCAL_STORAGE_ROOT")
+  if not value:
+    return None
+  root = Path(value).expanduser().resolve()
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def _is_local_client(client: Any) -> bool:
+  return isinstance(client, dict) and client.get("mode") == "local"
+
+
+def _local_path(root: Path, key: str) -> Path:
+  relative = key.lstrip("/")
+  path = (root / relative).resolve()
+  if not str(path).startswith(str(root)):
+    raise RuntimeError(f"Invalid storage key outside local root: {key}")
+  return path
+
+
+def resolve_bucket_name() -> str:
+  if local_storage_root() is not None:
+    return "__local__"
+  return env_or_error("R2_BUCKET")
+
+
+def build_s3_client() -> Any:
+  root = local_storage_root()
+  if root is not None:
+    log(f"build_s3_client local_root={root}")
+    return {"mode": "local", "root": str(root)}
+
   endpoint = env_or_error("R2_ENDPOINT")
   access_key = env_or_error("R2_ACCESS_KEY_ID")
   secret_key = env_or_error("R2_SECRET_ACCESS_KEY")
@@ -93,11 +126,21 @@ def sha256_hex(data: bytes) -> str:
   return hashlib.sha256(data).hexdigest()
 
 
-def upload_bytes(client: boto3.client, bucket: str, key: str, data: bytes, content_type: str) -> None:
+def upload_bytes(client: Any, bucket: str, key: str, data: bytes, content_type: str) -> None:
+  if _is_local_client(client):
+    root = Path(client["root"]).resolve()
+    path = _local_path(root, key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return
   client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
 
 
-def download_bytes(client: boto3.client, bucket: str, key: str) -> bytes:
+def download_bytes(client: Any, bucket: str, key: str) -> bytes:
+  if _is_local_client(client):
+    root = Path(client["root"]).resolve()
+    path = _local_path(root, key)
+    return path.read_bytes()
   obj = client.get_object(Bucket=bucket, Key=key)
   return obj["Body"].read()
 
@@ -784,13 +827,12 @@ def main() -> None:
   if run_id:
     update_run(run_id, {"status": "STARTED", "started_at": started_at})
 
-  bucket = env_or_error("R2_BUCKET")
+  bucket = resolve_bucket_name()
   source_key = f"raw/{version_id}/dataset.csv"
 
   client = build_s3_client()
   try:
-    obj = client.get_object(Bucket=bucket, Key=source_key)
-    raw_bytes = obj["Body"].read()
+    raw_bytes = download_bytes(client, bucket, source_key)
     dataset_sha = sha256_hex(raw_bytes)
 
     df = pd.read_csv(io.BytesIO(raw_bytes))

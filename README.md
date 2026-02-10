@@ -20,25 +20,33 @@ Research-first, traceable "CSV in -> analysis + predictions out" pipeline for Fr
 ## Admin CLI
 
 A unified repository CLI is available at `tools/repo_admin.py`.
+Reusable skill wrappers are available under `skills/` (including `skills/analysis-openalex` for OpenAlex literature mapping).
 
 Examples:
 
 - `python tools/repo_admin.py status`
 - `python tools/repo_admin.py doctor --component analysis`
 - `python tools/repo_admin.py analysis run --step all`
-- `python tools/repo_admin.py mapping propose --version-id <id> --dry-run`
-- `python tools/repo_admin.py pipeline run --version-id <id> --dry-run`
+- `python tools/repo_admin.py local init`
+- `python tools/repo_admin.py local register-version --version-id local-main --dataset-path dataset.csv`
+- `python tools/repo_admin.py mapping propose --version-id local-main`
+- `python tools/repo_admin.py mapping freeze --proposal-prefix mappings/proposals/local-main --output-bundle-id local-main --auto-approve-all`
+- `python tools/repo_admin.py pipeline run --version-id local-main`
+- `python tools/repo_admin.py analysis literature --dry-run`
 
 ### Prerequisites by workflow
 
 - Analysis: Python env with `numpy`, `pandas`, `matplotlib`, `seaborn`, `scipy`, `statsmodels`.
-- Mapping propose: Vertex AI access, GCP auth, and active billing. Required env typically includes `GCP_PROJECT_ID`, `R2_*`, and credentials.
-- Pipeline and enrichment: `R2_*` env vars and bucket access.
+- Mapping propose: local heuristic mode is default when running locally; no Vertex billing required.
+- Pipeline and enrichment: run against repo-local storage in `local_store/` by default.
+- Analysis literature mapping: queries [OpenAlex](https://openalex.org) and writes reports to `local_store/reports/literature/`.
 - Worker checks: `node` + `npm` available.
 - API commands: `WORKER_API_BASE` plus `WORKER_API_TOKEN` (and optional Cloudflare Access headers).
 
 ### Troubleshooting
 
-- Run `python tools/repo_admin.py doctor --component all` before external workflows.
-- If mapping propose fails due billing/auth, use `--dry-run` to validate orchestration and then configure Vertex billing/permissions.
+- Run `python tools/repo_admin.py doctor --component all` before workflows.
+- Initialize local storage with `python tools/repo_admin.py local init`.
+- Register a local version before mapping/pipeline runs with `python tools/repo_admin.py local register-version ...`.
+- Local workflow artifacts are written under `local_store/` and can be committed to GitHub.
 - If API commands return auth errors, verify token + Access headers and call `python tools/repo_admin.py api list-runs`.
