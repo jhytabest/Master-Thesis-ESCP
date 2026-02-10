@@ -28,3 +28,17 @@ Examples:
 - `python tools/repo_admin.py analysis run --step all`
 - `python tools/repo_admin.py mapping propose --version-id <id> --dry-run`
 - `python tools/repo_admin.py pipeline run --version-id <id> --dry-run`
+
+### Prerequisites by workflow
+
+- Analysis: Python env with `numpy`, `pandas`, `matplotlib`, `seaborn`, `scipy`, `statsmodels`.
+- Mapping propose: Vertex AI access, GCP auth, and active billing. Required env typically includes `GCP_PROJECT_ID`, `R2_*`, and credentials.
+- Pipeline and enrichment: `R2_*` env vars and bucket access.
+- Worker checks: `node` + `npm` available.
+- API commands: `WORKER_API_BASE` plus `WORKER_API_TOKEN` (and optional Cloudflare Access headers).
+
+### Troubleshooting
+
+- Run `python tools/repo_admin.py doctor --component all` before external workflows.
+- If mapping propose fails due billing/auth, use `--dry-run` to validate orchestration and then configure Vertex billing/permissions.
+- If API commands return auth errors, verify token + Access headers and call `python tools/repo_admin.py api list-runs`.

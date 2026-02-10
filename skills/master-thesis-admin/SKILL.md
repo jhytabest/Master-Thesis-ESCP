@@ -37,3 +37,5 @@ Prefer this wrapper for reusable calls:
 - Run commands from any directory; the CLI resolves repository paths internally.
 - Use `--dry-run` for mapping/pipeline/cloud commands when credentials or billing are unavailable.
 - Run `doctor` before external workflows to detect missing env or dependencies.
+- Expect `mapping propose` to require Vertex billing and IAM permissions; do not treat billing/auth failures as code defects unless repro occurs with valid credentials.
+- Prefer `doctor --component mapping` before invoking mapping, and `doctor --component ui` before launching the Streamlit console.
