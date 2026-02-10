@@ -27,6 +27,7 @@ import pandas as pd
 from scipy import stats as sp_stats
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from data_utils import clean_founders_number
 
 import matplotlib
 matplotlib.use("Agg")
@@ -37,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_PATH = REPO_ROOT / "dataset.csv"
 OUT_DIR = REPO_ROOT / "jobs" / "analysis" / "output"
 
-NUMERIC_PREDICTORS = ["founders_num", "8_age_moyen"]
+NUMERIC_PREDICTORS = ["0_founders_number", "8_age_moyen"]
 BINARY_PREDICTORS = [
     "5_has_female", "4_phd_founder", "7_MBA",
     "3_one_founder_serial", "6_was_1_change_founders",
@@ -47,8 +48,7 @@ CATEGORICAL_PREDICTORS = ["2_ceo_profile", "B2B/B2C"]
 
 def load() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, low_memory=False)
-    # Recode founders_number to numeric first (before any pd.to_numeric on predictors)
-    df["founders_num"] = df["0_founders_number"].replace({"4+": 4, "Personne morale": np.nan})
+    df = clean_founders_number(df)
 
     for col in ["target_total_funding", "target_delta_1st_round", "target_rounds"] + NUMERIC_PREDICTORS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -121,7 +121,7 @@ def descriptive_breakdown(df: pd.DataFrame, md: list):
     md.append("\n### Team & Education\n\n")
     md.append("| Variable | Female-Founded | Male-Only |\n")
     md.append("|----------|---------------|----------|\n")
-    for col, label in [("founders_num", "Avg # founders"),
+    for col, label in [("0_founders_number", "Avg # founders"),
                         ("4_phd_founder", "Has PhD (%)"),
                         ("7_MBA", "Has MBA (%)"),
                         ("3_one_founder_serial", "Serial founder (%)")]:
@@ -171,7 +171,7 @@ def interaction_effects(df: pd.DataFrame, md: list):
         "5_has_female × 4_phd_founder": sub["5_has_female"] * sub["4_phd_founder"],
         "5_has_female × 7_MBA": sub["5_has_female"] * sub["7_MBA"],
         "5_has_female × 3_one_founder_serial": sub["5_has_female"] * sub["3_one_founder_serial"],
-        "5_has_female × founders_num": sub["5_has_female"] * sub["founders_num"],
+        "5_has_female × 0_founders_number": sub["5_has_female"] * sub["0_founders_number"],
     }
 
     # Add sector interactions
@@ -224,7 +224,7 @@ def mediation_analysis(df: pd.DataFrame, md: list):
     # Step 2: Female → mediators
     mediators = {
         "santé_sector": (sub["11_industry_simplified"] == "santé").astype(float),
-        "founders_num": sub["founders_num"],
+        "0_founders_number": sub["0_founders_number"],
         "4_phd_founder": sub["4_phd_founder"].astype(float),
         "7_MBA": sub["7_MBA"].astype(float),
     }
@@ -287,7 +287,7 @@ def propensity_matching(df: pd.DataFrame, md: list):
     sub = df[df["target_total_funding"].notna() & df["5_has_female"].notna()].copy()
 
     # Covariates for propensity model
-    covariates = ["founders_num", "4_phd_founder", "7_MBA",
+    covariates = ["0_founders_number", "4_phd_founder", "7_MBA",
                   "3_one_founder_serial", "6_was_1_change_founders"]
 
     # Add sector dummies

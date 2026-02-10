@@ -43,3 +43,5 @@ Prefer this wrapper for reusable calls:
 - Run `doctor` before external workflows to detect missing env or dependencies.
 - Prefer sequence: `analysis run --step all` -> `analysis literature` -> `local init` -> `local register-version` -> `mapping propose` -> `mapping freeze --auto-approve-all` -> `pipeline run`.
 - Cloud-hosted Worker/API deployment is optional and can be deferred.
+- Expect `mapping propose` to require Vertex billing and IAM permissions in cloud mode; do not treat billing/auth failures as code defects unless repro occurs with valid credentials.
+- Prefer `doctor --component mapping` before invoking mapping, and `doctor --component ui` before launching the Streamlit console.
